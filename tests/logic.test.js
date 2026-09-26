@@ -440,27 +440,41 @@ test('F26：wind 参数真的作用在弹道上（P1 恒 0 级，但结构必须
   assert.equal(run(0), zero, '同一发同风级必须复现（无隐藏随机）');
 });
 
-test('F30：AI 对全新目标的第一发保证不直击（硬保证，不是提高概率）', () => {
+// 口径（auditor 判例层裁定，与 docs/需求与验收.md F30 同一口径）：
+// 「第一发必偏」= **不直击** 且 **落点离目标 ≥ AI.FIRST_SHOT_OFFSET（120px）**。
+// 判落点不判瞄点：瞄点挪开了，误差注入还能把弹拽回来一截，只有落点是真的。
+// 这里是**硬保证**不是调概率——aiAim 出手前拿真碰撞验过，不合格就继续往外推。
+// 三档误差不同、八件武器弹道不同（回旋镖折返、投石索反弹、巨石大判定圈），
+// 所以逐档逐件全验，任何一格出现直击或偏移不足都算破保证
+test('F30：AI 对全新目标的第一发不直击，且落点偏出 FIRST_SHOT_OFFSET（硬保证）', () => {
+  const FLOOR = D.AI.FIRST_SHOT_OFFSET;
+  let worst = Infinity, n = 0;
   for (const lv of ['easy', 'medium', 'hard']) {
-    let direct = 0, nearest = Infinity, n = 0;
-    for (let s = 1; s <= 40; s++) {
-      const w = L.newBattle(s);
-      const me = L.newPlayer(w.spawns[0], 0);
-      const foe = L.newPlayer(w.spawns[1], 1);
-      const wp = D.WEAPONS[0];
-      const aim = L.aiAim(w, me, foe, wp, lv, W.mulberry32(s * 31 + 7), 0);
-      const proj = L.makeProjectile(wp, me.x, me.y - 34, aim.angle, aim.power);
-      proj.owner = 0;
-      const r = L.simulate(w, proj, {}, { maxT: 20, players: [me, foe] });
-      n++;
-      if (!r.impact) continue;
-      if (r.impact.type === 'direct') direct++;
-      nearest = Math.min(nearest, Math.hypot(r.impact.x - foe.x, r.impact.y - (foe.y - 30)));
+    for (const wp of D.WEAPONS) {
+      let direct = 0, nearest = Infinity;
+      for (let s = 1; s <= 40; s++) {
+        const w = L.newBattle(s);
+        const me = L.newPlayer(w.spawns[0], 0);
+        const foe = L.newPlayer(w.spawns[1], 1);
+        const aim = L.aiAim(w, me, foe, wp, lv, W.mulberry32(s * 31 + 7), 0);
+        const proj = L.makeProjectile(wp, me.x, me.y - 34, aim.angle, aim.power);
+        proj.owner = 0;
+        const r = L.simulate(w, proj, {}, { maxT: 20, players: [me, foe] });
+        n++;
+        if (!r.impact) continue;                 // 没落点（飞出世界）谈不上打中
+        if (r.impact.type === 'direct') direct++;
+        nearest = Math.min(nearest, Math.hypot(r.impact.x - foe.x, r.impact.y - (foe.y - 30)));
+      }
+      assert.equal(direct, 0, `${lv}/${wp.id} 首发直击 ${direct} 次，"给玩家观察期"不成立`);
+      assert.ok(nearest >= FLOOR,
+        `${lv}/${wp.id} 首发落点最近只偏了 ${nearest.toFixed(0)}px，低于硬保证线 ${FLOOR}px`);
+      worst = Math.min(worst, nearest);
     }
-    assert.equal(direct, 0, `${lv} 首发直击 ${direct}/${n} 次，"给玩家观察期"不成立`);
-    assert.ok(nearest > D.HIT_R,
-      `${lv} 首发落点最近只偏了 ${nearest.toFixed(0)}px，小于判定半径 ${D.HIT_R}`);
   }
+  // 最小值贴着合格线，正是"硬保证在生效"的签名（不是靠调大概率撞出来的）
+  assert.ok(worst < FLOOR * 1.5,
+    `全场最小偏移 ${worst.toFixed(0)}px 离合格线 ${FLOOR}px 太远，说明偏移量是拍出来的、没有真的校验`);
+  assert.ok(n >= 900, `样本量 ${n} 太少，兜不住八件武器 × 三档`);
 });
 
 test('F30：误差随射击轮次收敛（CONVERGE 不是空旋钮），且下限按本档比例', () => {

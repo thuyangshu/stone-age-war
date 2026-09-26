@@ -402,13 +402,20 @@ const LOGIC = ((DATA, WORLD) => {
     return { wp, aim: aiAim(w, players[me], foe, wp, level, rng, hist) };
   }
 
-  // 这一发会不会直接命中目标。走的是真实碰撞判定，不是估算——
-  // "保证第一发不直击"这种事只有拿真正的命中检测验一遍才算保证。
-  function hitsDirect(w, me, target, weapon, angle, power) {
+  // 对全新目标的第一发，这一发算不算合格：既不直击，落点也离目标至少
+  // FIRST_SHOT_OFFSET 远。走的是真实碰撞判定，不是估算——"第一发必偏"是硬保证，
+  // 只有拿真正的命中检测验一遍才算保证。口径与时序见 docs/需求与验收.md F30
+  function firstShotOk(w, me, target, weapon, angle, power) {
     const p = makeProjectile(weapon, me.x, me.y - 34, angle, power);
-    p.owner = 0;                      // 不指定 owner，射手自己也会被算成目标
+    p.owner = 0;                      // owner=0 即射手本人，把他排除在命中目标外
+                                      // （不指定 owner 的话，射手自己也会被当成靶子）
     const r = simulate(w, p, {}, { maxT: 20, players: [me, target] });
-    return !!(r.impact && r.impact.type === 'direct');
+    if (!r.impact) return true;       // 弹丸没有落点（飞出世界）：谈不上打中
+    if (r.impact.type === 'direct') return false;
+    // 按**落点**判而不是按瞄点：瞄点挪开了 115~187px，但后面的误差注入还能把它
+    // 拽回来一截，看落点才知道这发弹最后偏到哪儿去了
+    const d = Math.hypot(r.impact.x - target.x, r.impact.y - (target.y - 30));
+    return d >= DATA.AI.FIRST_SHOT_OFFSET;
   }
 
   // 瞄准：给角度反解力度 + 弧线校验 + 误差注入
@@ -418,14 +425,18 @@ const LOGIC = ((DATA, WORLD) => {
     const g = P.G * (weapon.gMul || 1);
     const sx = me.x, sy = me.y - 34;              // 出手点
     let tx = target.x, ty = target.y - 30;        // 瞄胸口
-    // 全新目标的第一发：先把瞄点沿垂直方向挪开，硬保证打不中。
+    // 全新目标的第一发：先把瞄点沿垂直方向挪开，给下面的硬校验一个起手位。
     // 光靠放大误差做不到"必偏"——误差乘 2.6 倍后 hard 档首发直击率仍有 45%，
     // 观察期形同虚设（见 docs/需求与验收.md F30）。挪开量带随机，
-    // 看着像失手不像放水；偏离只保证"不直击"，溅射外圈仍可能擦到。
+    // 看着像失手不像放水。
+    // 这里只是**起手**，不承担保证：挪开的距离会被后面的误差注入吃掉一截，
+    // 真正"落点偏出 FIRST_SHOT_OFFSET"由出口那圈真实碰撞校验兜底。
+    // 偏移量取 1.2 倍合格线：够着合格线，又给误差注入留出往回拽的余量，
+    // 让出口校验多数时候一次就过（一次不过就多推一轮，见下面的循环）
     if (hist === 0) {
       const ox = tx - sx, oy = ty - sy;
       const l = Math.hypot(ox, oy) || 1;
-      const off = DATA.AI.FIRST_MISS_MIN * (0.8 + rng() * 0.5) * (rng() < 0.5 ? -1 : 1);
+      const off = DATA.AI.FIRST_SHOT_OFFSET * (0.96 + rng() * 0.6) * (rng() < 0.5 ? -1 : 1);
       tx += (-oy / l) * off;                      // (−oy, ox)/l 是连线的垂直单位向量
       ty += (ox / l) * off;
     }
@@ -503,13 +514,17 @@ const LOGIC = ((DATA, WORLD) => {
     // （F30 的 1/40 次漏网就是这么来的：验的和打的不是同一发）
     angle = clamp(angle, aLo, aHi);
     power = clamp(power, P.MIN_POWER, 1);
-    // 硬保证「全新目标第一发不直击」：上面挪开的瞄点会被误差注入又拽回来——
-    // easy 的 missChance 一口气抖 ±0.16 弧度，比挪开量还大，光挪瞄点保证不了。
-    // 所以算完自己验一遍，真打中了就继续往外推，推到打不中为止。
-    // 角度会被 aLo/aHi 夹住、可能推不动，但力度每次乘 0.94 必减（进入时 ≤1，
-    // 8 步最多降到 0.61，离 MIN_POWER 还有余量），所以每一轮都是真的换了一发弹
+    // 硬保证「全新目标第一发不直击、且落点偏出 FIRST_SHOT_OFFSET」：上面挪开的瞄点
+    // 会被误差注入又拽回来——easy 的 missChance 一口气抖 ±0.16 弧度，比挪开量还大，
+    // 光挪瞄点保证不了（400 局/档实测落点偏移最小 34px）。所以出手前拿真碰撞验一遍，
+    // 不合格就继续往外推，推到合格为止。**没有"推不动就照原样打"这条退路**。
+    // 收敛靠得住：角度会被 aLo/aHi 夹住、可能推不动，但力度每轮乘 0.94 必减——
+    // 减到 MIN_POWER（0.12）时初速只剩 0.12v，射程 v²sin2θ/g 掉到几十像素，
+    // 这发弹落在射手脚下，而站位间距至少 500px，必然远出合格线。
+    // 轮数上限按"能从 1.0 降到 MIN_POWER"取：0.94⁴⁰ ≈ 0.084 < 0.12，够到底；
+    // 实测几乎都在 1~2 轮内过，40 是给死循环兜底的防御上限，不是常见的收敛轮数
     if (hist === 0) {
-      for (let i = 0; i < 8 && hitsDirect(w, me, target, weapon, angle, power); i++) {
+      for (let i = 0; i < 40 && !firstShotOk(w, me, target, weapon, angle, power); i++) {
         angle = clamp(angle + (left ? -1 : 1) * 0.03, aLo, aHi);
         power = clamp(power * 0.94, P.MIN_POWER, 1);
       }

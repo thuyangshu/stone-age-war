@@ -84,7 +84,12 @@ const DATA = {
     medium: { angErr: 0.040, powErr: 0.080, missChance: 0.15, pickRandom: 0, greedy: 0.8 },
     hard:   { angErr: 0.009, powErr: 0.018, missChance: 0,   pickRandom: 0, greedy: 1 },
     FIRST_SHOT_BIAS: 2.6,  // 对全新目标的第一发误差放大倍数（给玩家观察期）
-    FIRST_MISS_MIN: 120,   // 首发瞄点至少横向挪开这么多像素（硬保证不直击，见 logic.js aiAim）
+    // 对全新目标的第一发，**落点**至少离目标这么远（px）。这是硬保证，不是调概率：
+    // 光放大误差做不到"必偏"（hard 首发直击率仍有 45%），光挪瞄点也不够——
+    // easy 的 missChance 一口气抖 ±0.16 弧度，能把挪开的瞄点又拽回来，
+    // 400 局/档实测落点偏移最小只到 34px。所以 aiAim 是"出手前拿真碰撞判一遍，
+    // 不合格就继续往外推"，合格线取这个数。口径见 docs/需求与验收.md F30
+    FIRST_SHOT_OFFSET: 120,
     // 每多打一发，误差乘这个系数（收敛但不会归零）。
     // 取 0.85 而不是 0.55：下限 MIN_ERR_RATIO 是 0.5，0.55 一步就撞到下限，
     // 收敛过程只剩"第 2 发"这一档，这个旋钮等于只有开和关两态。
