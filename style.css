@@ -1,0 +1,225 @@
+/* 石器大战 · 界面样式
+   配色与 docs/美术方案.md 同源：陶土橙 / 深棕 / 暖白，圆角无描边
+   不引用任何外部资源（字体走系统栈），否则单文件打包会断链 */
+:root {
+  --clay: #E0863C;
+  --clay-d: #C0603B;
+  --brown: #6B4530;
+  --ink: #4A342A;
+  --cream: #FAF0E4;
+  --hp: #7FA85C;
+  --hp-low: #C0603B;
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0; padding: 0; height: 100%; overflow: hidden;
+  background: var(--brown);
+  color: var(--ink);
+  font-family: "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, sans-serif;
+  user-select: none; -webkit-user-select: none;
+}
+
+#game { position: fixed; inset: 0; }
+#game canvas { display: block; touch-action: none; }
+
+.screen {
+  position: fixed; inset: 0; z-index: 40;
+  display: flex; align-items: center; justify-content: center;
+  background: linear-gradient(180deg, #BFE0F0 0%, #FFD9B8 62%, #E8A97A 100%);
+}
+.screen[hidden] { display: none; }
+.screen.mask { background: rgba(74, 52, 42, .72); backdrop-filter: blur(3px); }
+
+.titlebox {
+  text-align: center; padding: 26px 30px; max-width: 460px; width: calc(100% - 40px);
+  background: var(--cream);
+  border-radius: 26px;
+  box-shadow: 0 10px 0 rgba(74, 52, 42, .28), 0 18px 40px rgba(74, 52, 42, .3);
+}
+.titlebox h1 { margin: 0 0 6px; font-size: 40px; letter-spacing: 4px; color: var(--clay-d); }
+.titlebox h2 { margin: 0 0 6px; font-size: 27px; color: var(--clay-d); }
+.sub { margin: 0 0 18px; font-size: 14px; color: var(--brown); opacity: .85; line-height: 1.6; }
+.tip { margin: 16px 0 0; font-size: 12.5px; color: var(--brown); opacity: .7; line-height: 1.7; }
+.tip b { color: var(--clay-d); }
+
+.menu { display: flex; flex-direction: column; gap: 11px; }
+button.big {
+  min-height: 52px; padding: 0 22px; font-size: 18px; font-family: inherit; font-weight: 700;
+  color: var(--cream); background: var(--clay);
+  border: 0; border-radius: 16px; cursor: pointer;
+  box-shadow: 0 4px 0 var(--clay-d);
+  transition: transform .06s, box-shadow .06s;
+}
+button.big:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--clay-d); }
+/* 次要按钮用深棕不用浅灰：暖白字压在 #9AA0A6 上对比度只有 2.4:1（WCAG AA 要 4.5:1），
+   而且浅灰在暖白卡片上看着像"禁用"，玩家会以为点不动。深棕 7.5:1，也还在同一套色里 */
+button.big.ghost { background: var(--brown); box-shadow: 0 4px 0 var(--ink); }
+button.big.ghost:active { box-shadow: 0 1px 0 var(--ink); }
+
+#diff { display: flex; gap: 8px; margin-top: 14px; justify-content: center; }
+#diff[hidden] { display: none; }
+button.lv {
+  flex: 1; min-height: 44px; font-size: 15px; font-family: inherit; font-weight: 700;
+  color: var(--brown); background: #EADCC8;
+  border: 0; border-radius: 13px; cursor: pointer;
+}
+button.lv.on { color: var(--cream); background: var(--clay-d); }
+
+/* ---------- 顶栏 ---------- */
+#hud {
+  position: fixed; top: 0; left: 0; right: 0; z-index: 20;
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: calc(8px + env(safe-area-inset-top)) 10px 8px;
+  pointer-events: none;
+}
+#hud[hidden] { display: none; }
+#hud button { pointer-events: auto; }
+
+.pcard { flex: 1; min-width: 0; }
+.pcard .prow { display: flex; align-items: center; gap: 5px; margin-bottom: 4px; }
+.pcard.right .prow { justify-content: flex-end; }
+.pname { font-size: 12px; font-weight: 700; color: var(--cream); text-shadow: 0 1px 2px rgba(74,52,42,.6); }
+.burn { font-size: 13px; }
+.hpbar {
+  height: 13px; border-radius: 7px; overflow: hidden;
+  background: rgba(74, 52, 42, .45);
+  box-shadow: inset 0 1px 2px rgba(0,0,0,.3);
+}
+.hpfill {
+  height: 100%; width: 100%; background: var(--hp);
+  border-radius: 7px; transition: width .35s ease, background .35s;
+}
+.hpfill.low { background: var(--hp-low); }
+.pcard.right .hpfill { margin-left: auto; }
+
+.mid { flex: 0 0 auto; text-align: center; padding: 0 2px; }
+#turnlabel { font-size: 13px; font-weight: 700; color: var(--cream); text-shadow: 0 1px 2px rgba(74,52,42,.6); }
+#turnsub { font-size: 11px; color: var(--cream); opacity: .75; margin-top: 1px; }
+.mid .btns { display: flex; gap: 6px; justify-content: center; margin-top: 5px; }
+.icon-btn {
+  /* 44px 是移动端触控目标的下限（F19 的验收口径）。图标本身只有 15px 大，
+     多出来的地方是给手指留的，靠 flex 居中而不是靠 padding */
+  width: 44px; height: 44px; font-size: 17px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(250, 240, 228, .9); color: var(--ink);
+  border: 0; border-radius: 11px; cursor: pointer;
+}
+
+/* ---------- 武器栏 ---------- */
+#weapons {
+  position: fixed; z-index: 20;
+  left: 0; right: 0; bottom: 0;
+  display: flex; gap: 6px;
+  /* 必须是 safe center 而不是 center：普通 center 在内容比容器宽时会让两头等量溢出，
+     而滚动区只向右延伸，左端那截（投石）看得见摸不着——手机上八个槽装不下，
+     正好踩中这个坑，无限弹药的兜底武器直接点不到。safe center 装不下时退回左对齐，全程可滚。 */
+  justify-content: safe center;
+  padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+  overflow-x: auto; overflow-y: hidden;
+  scrollbar-width: none;
+  scroll-behavior: smooth;
+}
+#weapons[hidden] { display: none; }
+#weapons::-webkit-scrollbar { display: none; }
+
+.wslot {
+  position: relative; flex: 0 0 auto;
+  width: 58px; height: 58px; padding: 0;
+  background: rgba(250, 240, 228, .92);
+  border: 2.5px solid transparent; border-radius: 15px; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  transition: transform .08s;
+}
+.wslot canvas { width: 40px; height: 40px; }
+.wslot .wname { position: absolute; bottom: 1px; left: 0; right: 0; font-size: 9px; color: var(--brown); }
+.wslot .ammo {
+  position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; padding: 0 4px;
+  font-size: 10.5px; font-weight: 700; line-height: 18px; color: var(--cream);
+  background: var(--clay-d); border-radius: 9px;
+}
+.wslot.on { border-color: var(--clay); transform: translateY(-4px); }
+.wslot.dim { opacity: .35; }
+.wslot:disabled { cursor: default; }
+
+/* ---------- 力度条 ---------- */
+#power {
+  position: fixed; z-index: 20;
+  left: 50%; transform: translateX(-50%);
+  bottom: calc(80px + env(safe-area-inset-bottom));
+  width: min(300px, 76vw); text-align: center; pointer-events: none;
+}
+#power[hidden] { display: none; }
+.pw-track {
+  position: relative; height: 21px; border-radius: 11px;
+  background: rgba(74, 52, 42, .55);
+  box-shadow: inset 0 2px 4px rgba(0,0,0,.3), 0 0 0 2px rgba(250,240,228,.5);
+  overflow: hidden;
+}
+.pw-fill {
+  height: 100%; width: 0%;
+  background: linear-gradient(90deg, #7FA85C, #E0863C 62%, #C0603B);
+  border-radius: 11px;
+  transition: width .04s linear;
+}
+.pw-num {
+  position: absolute; inset: 0; font-size: 12px; font-weight: 700; line-height: 21px;
+  color: var(--cream); text-shadow: 0 1px 2px rgba(0,0,0,.55);
+}
+.pw-hint { margin-top: 5px; font-size: 11.5px; color: var(--cream); text-shadow: 0 1px 3px rgba(74,52,42,.8); }
+
+/* ---------- 横幅 ---------- */
+#banner {
+  position: fixed; z-index: 25; left: 0; right: 0; top: 32%;
+  text-align: center; font-size: 30px; font-weight: 800; letter-spacing: 3px;
+  color: var(--cream); text-shadow: 0 3px 0 rgba(74,52,42,.45), 0 8px 22px rgba(74,52,42,.5);
+  pointer-events: none;
+  animation: bpop .3s ease-out;
+}
+#banner[hidden] { display: none; }
+@keyframes bpop { from { transform: scale(.75); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+
+/* 对手在屏幕外时的边缘指示：手机竖屏一屏只装得下小半个战场，
+   没有它就只能对着看不见的目标盲投（相机下限 0.55 时世界宽度是屏宽的 2.3 倍） */
+#foe {
+  position: fixed; z-index: 25; transform: translate(-50%, -50%);
+  padding: 4px 11px; font-size: 12px; font-weight: 700; color: #7A2E20;
+  background: rgba(250, 240, 228, .95); border: 2px solid var(--clay);
+  border-radius: 20px; white-space: nowrap;
+  box-shadow: 0 3px 10px rgba(74, 52, 42, .35);
+  pointer-events: none;
+  animation: foePulse 1.4s ease-in-out infinite;
+}
+#foe[hidden] { display: none; }
+@keyframes foePulse { 0%, 100% { opacity: 1; } 50% { opacity: .55; } }
+
+/* 竖屏提示放屏幕下方空白处：原先挂在 top:12px，正好压在两条血条上，把血量挡了个严实 */
+#rotate {
+  position: fixed; z-index: 60; left: 50%; transform: translateX(-50%);
+  bottom: calc(148px + env(safe-area-inset-bottom));
+  padding: 7px 14px; font-size: 12.5px; color: var(--ink);
+  background: rgba(250, 240, 228, .95); border-radius: 12px;
+  pointer-events: none;
+}
+#rotate[hidden] { display: none; }
+
+@media (max-height: 460px) {
+  .titlebox h1 { font-size: 30px; }
+  .titlebox { padding: 16px 22px; }
+  button.big { min-height: 44px; font-size: 16px; }
+  .wslot { width: 50px; height: 50px; }
+  #power { bottom: calc(70px + env(safe-area-inset-bottom)); }
+}
+
+/* 窄屏：八个槽按 58px 排要 522px，390px 的手机一屏放不下。
+   收到 44px（触控下限）并把间距压到 4px，390px 屏上刚好差 2px，剩下的交给横向滚动兜底。 */
+@media (max-width: 430px) {
+  #weapons { gap: 4px; padding: 6px 6px calc(6px + env(safe-area-inset-bottom)); }
+  .wslot { width: 44px; height: 44px; border-radius: 12px; }
+  .wslot canvas { width: 30px; height: 30px; }
+  .wslot .wname { font-size: 8px; }
+  .wslot .ammo { min-width: 15px; height: 15px; padding: 0 3px; font-size: 9px; line-height: 15px; }
+  #power { bottom: calc(62px + env(safe-area-inset-bottom)); }
+  #rotate { bottom: calc(118px + env(safe-area-inset-bottom)); }
+}
