@@ -418,6 +418,25 @@ const LOGIC = ((DATA, WORLD) => {
     return d >= DATA.AI.FIRST_SHOT_OFFSET;
   }
 
+  // 把一发不合规的首发往外推到合规。两条路径共用（正常解与"够不着"兜底），
+  // 只此一份，免得一边改了另一边漏——"够不着"那条路径曾经就是不设防的
+  // （实测回旋镖在 3/300 张图上靠那条路径直击了对手）
+  //
+  // 收敛靠得住：角度会被 aLo/aHi 夹住、可能推不动，但力度每轮乘 0.94 必减——
+  // 减到 MIN_POWER（0.12）时初速只剩 0.12v，射程 v²sin2θ/g 掉到几十像素，
+  // 这发弹落在射手脚下，而站位间距至少 500px，必然远出合格线。
+  // 所以"推到底"这个状态本身就是合格的，循环必然在有限步内退出，不是赌运气。
+  // 轮数上限按"能从 1.0 降到 MIN_POWER"取：0.94ⁿ ≤ 0.12 要 n=35，故 n 轮内必到
+  // 那个保底状态，40 留了余量。实测 1200 发首发（aiChoose 真正出手的那一发）
+  // 的推挤轮数：54.3% 一次就过、29.3% 推 1 轮、9.5% 推 2 轮，最长 10 轮
+  function nudgeToFirstShotMiss(w, me, target, weapon, angle, power, left, aLo, aHi) {
+    for (let i = 0; i < 40 && !firstShotOk(w, me, target, weapon, angle, power); i++) {
+      angle = clamp(angle + (left ? -1 : 1) * 0.03, aLo, aHi);
+      power = clamp(power * 0.94, P.MIN_POWER, 1);
+    }
+    return { angle, power };
+  }
+
   // 瞄准：给角度反解力度 + 弧线校验 + 误差注入
   // hist：对同一目标已射击次数（新目标首发放大误差，随交火收敛但有下限）
   function aiAim(w, me, target, weapon, level, rng, hist = 0) {
@@ -487,7 +506,13 @@ const LOGIC = ((DATA, WORLD) => {
     // HIT_R + 弹丸半径（巨石是 26+16=42px），拿 miss 直接比阈值会把
     // "打得准"判成"够不着"——巨石曾因此 200/200 全判够不着
     if (!best || (!best.direct && best.near > DATA.AI.REACH_TOL)) {
-      return { angle: toWorld(45 * DEG), power: 1, hopeless: true, near: best ? best.near : Infinity };
+      let hAngle = toWorld(45 * DEG), hPower = 1;
+      // 够不着 ≠ 打不到：45° 满力这一发从来没验过直击，实测真能打中
+      // （回旋镖在 3/300 张图上就这么直击了对手）。全新目标的第一发在这条路径上
+      // 同样受 F30 硬保证约束，所以一并推挤——两条出口一份保证，不留例外
+      if (hist === 0) ({ angle: hAngle, power: hPower } =
+        nudgeToFirstShotMiss(w, me, target, weapon, hAngle, hPower, left, aLo, aHi));
+      return { angle: hAngle, power: hPower, hopeless: true, near: best ? best.near : Infinity };
     }
 
     let angle = toWorld(best.elev);
@@ -517,17 +542,10 @@ const LOGIC = ((DATA, WORLD) => {
     // 硬保证「全新目标第一发不直击、且落点偏出 FIRST_SHOT_OFFSET」：上面挪开的瞄点
     // 会被误差注入又拽回来——easy 的 missChance 一口气抖 ±0.16 弧度，比挪开量还大，
     // 光挪瞄点保证不了（400 局/档实测落点偏移最小 34px）。所以出手前拿真碰撞验一遍，
-    // 不合格就继续往外推，推到合格为止。**没有"推不动就照原样打"这条退路**。
-    // 收敛靠得住：角度会被 aLo/aHi 夹住、可能推不动，但力度每轮乘 0.94 必减——
-    // 减到 MIN_POWER（0.12）时初速只剩 0.12v，射程 v²sin2θ/g 掉到几十像素，
-    // 这发弹落在射手脚下，而站位间距至少 500px，必然远出合格线。
-    // 轮数上限按"能从 1.0 降到 MIN_POWER"取：0.94⁴⁰ ≈ 0.084 < 0.12，够到底；
-    // 实测几乎都在 1~2 轮内过，40 是给死循环兜底的防御上限，不是常见的收敛轮数
+    // 不合格就继续往外推，推到合格为止。**没有"推不动就照原样打"这条退路**
+    // （上面那条"够不着"的出口也走同一份推挤，见 nudgeToFirstShotMiss）
     if (hist === 0) {
-      for (let i = 0; i < 40 && !firstShotOk(w, me, target, weapon, angle, power); i++) {
-        angle = clamp(angle + (left ? -1 : 1) * 0.03, aLo, aHi);
-        power = clamp(power * 0.94, P.MIN_POWER, 1);
-      }
+      ({ angle, power } = nudgeToFirstShotMiss(w, me, target, weapon, angle, power, left, aLo, aHi));
     }
     return { angle, power, hopeless: false, elev: best.elev, miss: best.miss, near: best.near };
   }

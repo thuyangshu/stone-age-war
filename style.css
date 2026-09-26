@@ -99,7 +99,7 @@ button.lv.on { color: var(--cream); background: var(--clay-d); }
 #turnsub { font-size: 11px; color: var(--cream); opacity: .75; margin-top: 1px; }
 .mid .btns { display: flex; gap: 6px; justify-content: center; margin-top: 5px; }
 .icon-btn {
-  /* 44px 是移动端触控目标的下限（F19 的验收口径）。图标本身只有 15px 大，
+  /* 44px 是移动端触控目标的下限（N2 的验收口径）。图标本身只有 15px 大，
      多出来的地方是给手指留的，靠 flex 居中而不是靠 padding */
   width: 44px; height: 44px; font-size: 17px; line-height: 1;
   display: flex; align-items: center; justify-content: center;

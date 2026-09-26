@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#6B4530">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<!-- 石器大战 单文件版 · 打包于 2026-09-26 14:23 · 由 build.mjs 从源码生成，请勿手改 -->
+<!-- 石器大战 单文件版 · 打包于 2026-09-26 18:56 · 由 build.mjs 从源码生成，请勿手改 -->
 <!--
 # 第三方库与许可证
 
@@ -215,7 +215,7 @@ button.lv.on { color: var(--cream); background: var(--clay-d); }
 #turnsub { font-size: 11px; color: var(--cream); opacity: .75; margin-top: 1px; }
 .mid .btns { display: flex; gap: 6px; justify-content: center; margin-top: 5px; }
 .icon-btn {
-  /* 44px 是移动端触控目标的下限（F19 的验收口径）。图标本身只有 15px 大，
+  /* 44px 是移动端触控目标的下限（N2 的验收口径）。图标本身只有 15px 大，
      多出来的地方是给手指留的，靠 flex 居中而不是靠 padding */
   width: 44px; height: 44px; font-size: 17px; line-height: 1;
   display: flex; align-items: center; justify-content: center;
@@ -714,12 +714,25 @@ const DATA = {
   // 所以要拉开档次只能把误差顶到圈**边缘**：medium 散布调到约 44px。
   // 这不是把 medium 调弱，是让它第一次成为"打得中但不保证"的中档。
   //
-  // 定档结果（bot-playtest 口径，每档 200 局，按 95% 置信区间判定）：
-  //   easy 打 medium 18.5%+6.9%（验收 ≤30%）　medium 镜像先手 57.5%±6.9%（验收 45~55%）
-  //   hard 打 medium 84.5%−6.9%（验收 ≥75%）
-  // 锁定目标后的单发直击率：easy 35% / medium 95% / hard 100%——三档终于分得开了。
-  // hard 镜像的先手胜率 77%（这项没有验收线，是设计红线）：初版 98% 时对局等于掷硬币，
-  // 现在留在 77%，硬碰硬仍有来有回。
+  // 定档结果（bot-playtest 口径，每档 200 局 × 两套独立种子，按 95% 置信区间判定）：
+  //   easy 打 medium  17.5% / 18.5%（验收 ≤30%，区间上沿 24.4% / 25.4%）✅
+  //   hard 打 medium  84.0% / 87.0%（验收 ≥75%，区间下沿 77.1% / 80.1%）✅
+  //   medium 镜像先手 55.0% / 61.0%（验收 45~55%）❌ 未达标，见下方"先手优势"段
+  // 锁定目标（同一目标第 5 发）后的单发直击率：easy 33% / medium 68% / hard 94%——
+  // 三档终于分得开了。首发（hist=0）三档一律 0%，那是 F30 的硬保证。
+  //
+  // 先手优势（设计红线。**当前未达标**，非调参问题，待作者裁决）：
+  // 镜像局里唯一的不对称就是回合顺序，所以"先手胜率"量的就是回合顺序值多少。
+  // 实测 medium 55~63%（四套种子各 400 局：59.5 / 62.5 / 57.5 / 62.7，线是 45~55）。
+  // 这不是误差没调好，是**轮流竞速的结构性产物**：双方轮流打，先攒够致命发数者胜，
+  // 于是赢家出手次数恒 ≥ 输家——400 局 × 三档实测，这条恒等式 100% 成立。
+  // 优势随命中率单调放大：easy ~53%（打得不准，先后手差不多）、medium ~60%、
+  // hard ~80%（初版 98% 就是这条曲线的顶端）。
+  // **HP 补偿治不了**：给后手加血在 hard 档是刀锋式的——+4 时 80.7%、+6 时 41.0%，
+  // 中间没有可用值（加血把先手方的"致命发数"推高一发，命中发数的奇偶一翻，
+  // 胜负就整体倒向另一边）。要真消除只能改回合规则，属玩法改动，不在调参范围。
+  // 品类内这是常态（Worms / Pocket Tanks / Tank Stars 同为轮流制）；人机模式里
+  // 先手恒为玩家，优势在玩家这一侧（该"恒"与 game.js 第 34 行注释不符，已报审计）。
   AI: {
     easy:   { angErr: 0.156, powErr: 0.180, missChance: 0.30, pickRandom: 3, greedy: 0 },
     medium: { angErr: 0.040, powErr: 0.080, missChance: 0.15, pickRandom: 0, greedy: 0.8 },
@@ -1463,6 +1476,25 @@ const LOGIC = ((DATA, WORLD) => {
     return d >= DATA.AI.FIRST_SHOT_OFFSET;
   }
 
+  // 把一发不合规的首发往外推到合规。两条路径共用（正常解与"够不着"兜底），
+  // 只此一份，免得一边改了另一边漏——"够不着"那条路径曾经就是不设防的
+  // （实测回旋镖在 3/300 张图上靠那条路径直击了对手）
+  //
+  // 收敛靠得住：角度会被 aLo/aHi 夹住、可能推不动，但力度每轮乘 0.94 必减——
+  // 减到 MIN_POWER（0.12）时初速只剩 0.12v，射程 v²sin2θ/g 掉到几十像素，
+  // 这发弹落在射手脚下，而站位间距至少 500px，必然远出合格线。
+  // 所以"推到底"这个状态本身就是合格的，循环必然在有限步内退出，不是赌运气。
+  // 轮数上限按"能从 1.0 降到 MIN_POWER"取：0.94ⁿ ≤ 0.12 要 n=35，故 n 轮内必到
+  // 那个保底状态，40 留了余量。实测 1200 发首发（aiChoose 真正出手的那一发）
+  // 的推挤轮数：54.3% 一次就过、29.3% 推 1 轮、9.5% 推 2 轮，最长 10 轮
+  function nudgeToFirstShotMiss(w, me, target, weapon, angle, power, left, aLo, aHi) {
+    for (let i = 0; i < 40 && !firstShotOk(w, me, target, weapon, angle, power); i++) {
+      angle = clamp(angle + (left ? -1 : 1) * 0.03, aLo, aHi);
+      power = clamp(power * 0.94, P.MIN_POWER, 1);
+    }
+    return { angle, power };
+  }
+
   // 瞄准：给角度反解力度 + 弧线校验 + 误差注入
   // hist：对同一目标已射击次数（新目标首发放大误差，随交火收敛但有下限）
   function aiAim(w, me, target, weapon, level, rng, hist = 0) {
@@ -1532,7 +1564,13 @@ const LOGIC = ((DATA, WORLD) => {
     // HIT_R + 弹丸半径（巨石是 26+16=42px），拿 miss 直接比阈值会把
     // "打得准"判成"够不着"——巨石曾因此 200/200 全判够不着
     if (!best || (!best.direct && best.near > DATA.AI.REACH_TOL)) {
-      return { angle: toWorld(45 * DEG), power: 1, hopeless: true, near: best ? best.near : Infinity };
+      let hAngle = toWorld(45 * DEG), hPower = 1;
+      // 够不着 ≠ 打不到：45° 满力这一发从来没验过直击，实测真能打中
+      // （回旋镖在 3/300 张图上就这么直击了对手）。全新目标的第一发在这条路径上
+      // 同样受 F30 硬保证约束，所以一并推挤——两条出口一份保证，不留例外
+      if (hist === 0) ({ angle: hAngle, power: hPower } =
+        nudgeToFirstShotMiss(w, me, target, weapon, hAngle, hPower, left, aLo, aHi));
+      return { angle: hAngle, power: hPower, hopeless: true, near: best ? best.near : Infinity };
     }
 
     let angle = toWorld(best.elev);
@@ -1562,17 +1600,10 @@ const LOGIC = ((DATA, WORLD) => {
     // 硬保证「全新目标第一发不直击、且落点偏出 FIRST_SHOT_OFFSET」：上面挪开的瞄点
     // 会被误差注入又拽回来——easy 的 missChance 一口气抖 ±0.16 弧度，比挪开量还大，
     // 光挪瞄点保证不了（400 局/档实测落点偏移最小 34px）。所以出手前拿真碰撞验一遍，
-    // 不合格就继续往外推，推到合格为止。**没有"推不动就照原样打"这条退路**。
-    // 收敛靠得住：角度会被 aLo/aHi 夹住、可能推不动，但力度每轮乘 0.94 必减——
-    // 减到 MIN_POWER（0.12）时初速只剩 0.12v，射程 v²sin2θ/g 掉到几十像素，
-    // 这发弹落在射手脚下，而站位间距至少 500px，必然远出合格线。
-    // 轮数上限按"能从 1.0 降到 MIN_POWER"取：0.94⁴⁰ ≈ 0.084 < 0.12，够到底；
-    // 实测几乎都在 1~2 轮内过，40 是给死循环兜底的防御上限，不是常见的收敛轮数
+    // 不合格就继续往外推，推到合格为止。**没有"推不动就照原样打"这条退路**
+    // （上面那条"够不着"的出口也走同一份推挤，见 nudgeToFirstShotMiss）
     if (hist === 0) {
-      for (let i = 0; i < 40 && !firstShotOk(w, me, target, weapon, angle, power); i++) {
-        angle = clamp(angle + (left ? -1 : 1) * 0.03, aLo, aHi);
-        power = clamp(power * 0.94, P.MIN_POWER, 1);
-      }
+      ({ angle, power } = nudgeToFirstShotMiss(w, me, target, weapon, angle, power, left, aLo, aHi));
     }
     return { angle, power, hopeless: false, elev: best.elev, miss: best.miss, near: best.near };
   }

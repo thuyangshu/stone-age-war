@@ -444,37 +444,80 @@ test('F26：wind 参数真的作用在弹道上（P1 恒 0 级，但结构必须
 // 「第一发必偏」= **不直击** 且 **落点离目标 ≥ AI.FIRST_SHOT_OFFSET（120px）**。
 // 判落点不判瞄点：瞄点挪开了，误差注入还能把弹拽回来一截，只有落点是真的。
 // 这里是**硬保证**不是调概率——aiAim 出手前拿真碰撞验过，不合格就继续往外推。
-// 三档误差不同、八件武器弹道不同（回旋镖折返、投石索反弹、巨石大判定圈），
-// 所以逐档逐件全验，任何一格出现直击或偏移不足都算破保证
+//
+// 量在哪一层很重要：**要量 aiChoose 真正出手的那一发**，不能点名某件武器直接调 aiAim——
+// AI 会换武器（够不着就换下一件），点名的武器可能根本不在它最终的选择里，
+// 量出来的不是"AI 的第一发"。下面第一个用例走 aiChoose，
+// 第二个用例再把八件武器逐件摊开（那是覆盖面检查，不是口径）
+function firstShotOf(seed, lv) {
+  const w = L.newBattle(seed);
+  const players = [L.newPlayer(w.spawns[0], 0), L.newPlayer(w.spawns[1], 1)];
+  const rng = W.mulberry32((seed ^ 0x9E3779B9) >>> 0);
+  const act = L.aiChoose(w, players, 0, lv, rng);
+  const proj = L.makeProjectile(act.wp, players[0].x, players[0].y - 34, act.aim.angle, act.aim.power);
+  proj.owner = 0;
+  const r = L.simulate(w, proj, {}, { players, maxT: 14 });
+  return { act, impact: r.impact, foe: players[1] };
+}
+
 test('F30：AI 对全新目标的第一发不直击，且落点偏出 FIRST_SHOT_OFFSET（硬保证）', () => {
   const FLOOR = D.AI.FIRST_SHOT_OFFSET;
-  let worst = Infinity, n = 0;
+  let worst = Infinity, n = 0, direct = 0, hopeless = 0;
+  for (const lv of ['easy', 'medium', 'hard']) {
+    for (let s = 1; s <= 300; s++) {
+      const { act, impact, foe } = firstShotOf(s, lv);
+      if (act.aim.hopeless) hopeless++;
+      n++;
+      if (!impact) continue;                     // 没落点（飞出世界）谈不上打中
+      if (impact.type === 'direct') direct++;
+      const d = Math.hypot(impact.x - foe.x, impact.y - (foe.y - 30));
+      assert.ok(impact.type !== 'direct' && d >= FLOOR,
+        `${lv} seed=${s} 首发 wp=${act.wp.id} 类型=${impact.type} 偏移=${d.toFixed(1)}px，破硬保证线 ${FLOOR}px`);
+      worst = Math.min(worst, d);
+    }
+  }
+  // aiChoose 只在"八件武器全都够不着"时才走兜底，而站位生成已校验投石双向可达
+  assert.equal(hopeless, 0, `有 ${hopeless}/${n} 发走了"全都够不着"兜底，那条路径上没有硬校验`);
+  // 最小值贴着合格线，正是"硬保证在生效"的签名（不是靠调大概率撞出来的）
+  assert.ok(worst < FLOOR * 1.5,
+    `全场最小偏移 ${worst.toFixed(0)}px 离合格线 ${FLOOR}px 太远，说明偏移量是拍出来的、没有真的校验`);
+  assert.equal(direct, 0, `首发直击 ${direct}/${n} 次，"给玩家观察期"不成立`);
+});
+
+// 覆盖面检查：八件武器逐件点名，验各自的弹道特性下硬校验都兜得住
+// （回旋镖飞出去会折返、投石索落地反弹、巨石判定圈 42px）
+//
+// **不跳过 hopeless**：aiAim 判"够不着"虽会提前返回，但那条出口也走同一份
+// nudgeToFirstShotMiss，所以它照样得破不了线。这段早前是 `if (aim.hopeless) continue;`
+// 跳过的——审计就是从这个缺口打进来的：回旋镖在种子 111/116/153（三档一致）
+// 由该早返回直接命中对手。跳过等于把整条路径划在保证之外，现在补上。
+//
+// 种子放到 300：审计复现用的 111/116/153 必须在样本内，否则"全验"二字站不住
+test('F30 覆盖面：八件武器各自动用硬保证时都不破线', () => {
+  const FLOOR = D.AI.FIRST_SHOT_OFFSET;
   for (const lv of ['easy', 'medium', 'hard']) {
     for (const wp of D.WEAPONS) {
-      let direct = 0, nearest = Infinity;
-      for (let s = 1; s <= 40; s++) {
+      let n = 0, nearest = Infinity, direct = 0, hopeless = 0;
+      for (let s = 1; s <= 300; s++) {
         const w = L.newBattle(s);
         const me = L.newPlayer(w.spawns[0], 0);
         const foe = L.newPlayer(w.spawns[1], 1);
         const aim = L.aiAim(w, me, foe, wp, lv, W.mulberry32(s * 31 + 7), 0);
+        if (aim.hopeless) hopeless++;
         const proj = L.makeProjectile(wp, me.x, me.y - 34, aim.angle, aim.power);
         proj.owner = 0;
         const r = L.simulate(w, proj, {}, { maxT: 20, players: [me, foe] });
+        if (!r.impact) continue;
         n++;
-        if (!r.impact) continue;                 // 没落点（飞出世界）谈不上打中
         if (r.impact.type === 'direct') direct++;
         nearest = Math.min(nearest, Math.hypot(r.impact.x - foe.x, r.impact.y - (foe.y - 30)));
       }
-      assert.equal(direct, 0, `${lv}/${wp.id} 首发直击 ${direct} 次，"给玩家观察期"不成立`);
+      assert.ok(n > 0, `${lv}/${wp.id} 一发都没验到，这件的覆盖是空的`);
+      assert.equal(direct, 0, `${lv}/${wp.id} 首发直击 ${direct} 次（hopeless ${hopeless} 发）`);
       assert.ok(nearest >= FLOOR,
-        `${lv}/${wp.id} 首发落点最近只偏了 ${nearest.toFixed(0)}px，低于硬保证线 ${FLOOR}px`);
-      worst = Math.min(worst, nearest);
+        `${lv}/${wp.id} 首发落点最近只偏了 ${nearest.toFixed(0)}px，低于硬保证线 ${FLOOR}px（hopeless ${hopeless} 发）`);
     }
   }
-  // 最小值贴着合格线，正是"硬保证在生效"的签名（不是靠调大概率撞出来的）
-  assert.ok(worst < FLOOR * 1.5,
-    `全场最小偏移 ${worst.toFixed(0)}px 离合格线 ${FLOOR}px 太远，说明偏移量是拍出来的、没有真的校验`);
-  assert.ok(n >= 900, `样本量 ${n} 太少，兜不住八件武器 × 三档`);
 });
 
 test('F30：误差随射击轮次收敛（CONVERGE 不是空旋钮），且下限按本档比例', () => {

@@ -4,13 +4,26 @@
 // SMOKE_PAGE=某 html 路径 可改测打包出的单文件版
 import { spawn } from 'node:child_process';
 import { mkdtempSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { MUTE, SPAWN_OPTS, register, reapOne, watchdog } from './reaper.mjs';
 
 const CHROME = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-const PORT = 9300 + Math.floor(Math.random() * 500);
+// 端口不能靠随机数挑。旧写法 9300+rand(500) 只有 500 个候选，而开发/测试/审计
+// 三方可能同时在跑无头 Chrome（实测撞过一次）。撞上的后果比"起不来"更糟：
+// 自己的实例绑不上调试端口，下面的 /json/list 却会**连上别人那台浏览器**，
+// 然后一路驱动别人家的页面，报出来的错跟本仓库毫无关系。
+// 改成向内核要一个空闲端口：绑 0 号端口拿到分配值再关掉，冲突概率从 1/500 降到可忽略。
+const PORT = await new Promise((resolve, reject) => {
+  const srv = createServer();
+  srv.on('error', reject);
+  srv.listen(0, '127.0.0.1', () => {
+    const p = srv.address().port;
+    srv.close(() => resolve(p));
+  });
+});
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const PAGE = pathToFileURL(process.env.SMOKE_PAGE || join(ROOT, 'index.html')).href;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -142,7 +155,13 @@ async function main() {
   for (let i = 0; i < 50 && !target; i++) {
     try { target = (await (await fetch(`http://127.0.0.1:${PORT}/json/list`)).json()).find((t) => t.type === 'page'); } catch { await sleep(100); }
   }
-  if (!target) throw new Error('Chrome 启动失败');
+  // 起不来要立刻说清是哪一步、哪个端口，别只丢一句"启动失败"让人去猜
+  if (!target) throw new Error(`Chrome 启动失败：端口 ${PORT} 上没等到可调试页面（等了 5s）`);
+  // 兜底防串台：自己的实例刚起时只有 about:blank 一个页面。若这里拿到的不是它，
+  // 说明 127.0.0.1:PORT 是别人的浏览器（端口抢占），继续跑就是驱动别人家的页面
+  if (target.url && target.url !== 'about:blank') {
+    throw new Error(`端口 ${PORT} 上挂的不是本进程启动的 Chrome（页面是 ${target.url}），疑似端口被占`);
+  }
   ws = new WebSocket(target.webSocketDebuggerUrl);
   await new Promise((r, j) => { ws.onopen = r; ws.onerror = j; });
   ws.onmessage = (m) => {
@@ -238,22 +257,29 @@ async function main() {
   // 压到 60 血既能让对局真实跑完（同一套瞄准→飞行→结算→换边循环），又不至于拖垮整条闸门。
   await evaluate('__debug.setHp(0, 60); __debug.setHp(1, 60);');
   // 按墙钟给预算而不是按轮询次数：一次轮询要一个 CDP 往返，机器一忙往返就变慢，
-  // 按次数计会在同一局上误判超时（实测机器有负载时偶发 22/23）
-  const dl = Date.now() + 75000;
-  let winner = null;
+  // 按次数计会在同一局上误判超时（实测机器有负载时偶发 22/23）。
+  // 预算 120 秒：这局压到 60 血，约 10~16 发、一发飞行约 2 秒游戏时间，本来十几秒就完。
+  // 120 秒是给"机器被压满、页面时钟跟着被拖慢"留的余量——实测 load 17、十几个 Chrome
+  // 实例同时在跑时，同一条循环 75 秒只推进了 2 发（那次的 75 秒预算就这么误判了）。
+  // 余量不影响判定力：真卡住时一发都推不动，给多久都是失败，只是失败信息要留够线索
+  const dl = Date.now() + 120000;
+  let winner = null, blocked = 0, lastPhase = '';
   while (Date.now() < dl) {
     const cur = await st();
+    lastPhase = cur.phase;
     if (cur.winner !== null) { winner = cur.winner; break; }
     if (cur.phase === 'hidden' || cur.phase === 'over') break;
     // 用解算出的真实角度出手，保证能打中，别让冒烟靠运气
-    const ok = await evaluate(`(() => {
-      if (__debug.game.scene.getScene('battle').s.phase === 'handoff') { document.getElementById('btn-handoff').click(); return true; }
-      return __aimHit() === 'fired'; })()`);
+    const r = await evaluate(`(() => {
+      if (__debug.game.scene.getScene('battle').s.phase === 'handoff') { document.getElementById('btn-handoff').click(); return 'handoff'; }
+      return __aimHit(); })()`);
+    if (r === 'blocked' || r === 'no-solution') blocked++;
     // 飞行中就把轮询压到最短：整局的时间几乎全花在等弹丸落地
-    await sleep(ok ? 30 : 8);
+    await sleep(r === 'fired' ? 30 : 8);
   }
   s = await st();
-  check('S4 完整对局分出胜负', s.winner === 0 || s.winner === 1, `winner=${s.winner} 打了 ${Math.max(...s.shots)} 发`);
+  check('S4 完整对局分出胜负', s.winner === 0 || s.winner === 1,
+    `winner=${s.winner} 打了 ${Math.max(...s.shots)} 发，收尾 phase=${lastPhase}，助手判 blocked ${blocked} 次`);
   await waitFor(`!document.getElementById('over').hidden`, 4000);
   const over = await dom();
   check('S4 结算页弹出且写明胜方', over.over);
