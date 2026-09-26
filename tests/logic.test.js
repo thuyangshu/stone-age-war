@@ -315,7 +315,9 @@ test('Fuzz：500 局全自动对局，不出错、不出现 NaN、200 回合内�
     }
     for (const p of m.players) {
       assert.ok(Number.isFinite(p.hp), `HP 出现 NaN（种子 ${i + 1}）`);
-      assert.ok(p.hp >= 0 && p.hp <= D.HP);
+      // 上界按各人自己的满血算：后手有贴目（DATA.KOMI），拿全局 D.HP 当上界会误报
+      assert.ok(p.hp >= 0 && p.hp <= p.hpMax, `HP 越界 ${p.hp}/${p.hpMax}（种子 ${i + 1}）`);
+      assert.ok(p.hpMax === D.HP + (p.idx === 1 ? D.KOMI : 0), `满血值不对（种子 ${i + 1}）`);
       assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y), `坐标出现 NaN（种子 ${i + 1}）`);
     }
     assert.ok([0, 1].includes(m.winner));

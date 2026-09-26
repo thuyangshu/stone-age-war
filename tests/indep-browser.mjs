@@ -204,6 +204,77 @@ async function main() {
   }
 
   // ══════════════════════════════════════════════════════════
+  // ══════════════════════════════════════════════════════════
+  console.log('\n══ K. 后手贴目（DATA.KOMI）在界面上的后果 ══');
+  // 贴目按回合顺序发：人机模式玩家恒先手（0 号），所以 12 点血落在 AI 那侧
+  for (const mode of ['solo', 'duo']) {
+    await nav();
+    await clickId(mode === 'solo' ? 'btn-solo' : 'btn-duo');
+    await waitFor('window.__debug.ready() && __debug.state().phase === "aim"', 6000);
+    await newBattle(mode, 'medium', 70700);
+    await waitFor(`__debug.state() && __debug.state().phase === 'aim'`, 6000);
+    const full = await evaluate(`(() => { const s=__debug.game.scene.getScene('battle').s;
+      return { HP: DATA.HP, KOMI: DATA.KOMI, ps: s.players.map(p=>({hp:p.hp,hpMax:p.hpMax,idx:p.idx})) }; })()`);
+    check(`K1[${mode}] 开局满血 = 先手 ${full.HP} / 后手 ${full.HP + full.KOMI}（贴目按回合顺序发）`,
+      full.ps[0].hp === full.HP && full.ps[0].hpMax === full.HP
+      && full.ps[1].hp === full.HP + full.KOMI && full.ps[1].hpMax === full.HP + full.KOMI,
+      `hp/hpMax = ${full.ps.map((p) => `${p.hp}/${p.hpMax}`).join(' ｜ ')}`);
+  }
+
+  // K2 血条比例必须按各人自己的 hpMax 算。满血时看不出差别（Math.min 会把 112% 夹成 100%），
+  // 只有掉到中段才分得开：56/112 = 50%，按 DATA.HP 算会画成 56%——这是唯一能区分两种实现的观测量
+  await nav();
+  await clickId('btn-solo');
+  await waitFor('window.__debug.ready() && __debug.state().phase === "aim"', 6000);
+  await newBattle('solo', 'medium', 70701);
+  await waitFor(`__debug.state() && __debug.state().phase === 'aim'`, 6000);
+  await evaluate(`(() => { const sc=__debug.game.scene.getScene('battle'), s=sc.s;
+    s.players[1].hp = 56; s.players[0].hp = 50; UI.syncHp(); return true; })()`);
+  await sleep(500);   // .hpfill 有 .35s 宽度过渡，等它走完再量
+  const bars = await evaluate(`(() => { const out={};
+    for (const i of [0,1]) { const card=document.getElementById('p'+i+'card');
+      out[i] = { fill: card.querySelector('.hpfill').getBoundingClientRect().width,
+                 bar: card.querySelector('.hpbar').getBoundingClientRect().width }; }
+    return out; })()`);
+  const rb0 = bars[0].fill / bars[0].bar, rb1 = bars[1].fill / bars[1].bar;
+  check('K2 血条按 hpMax 画：后手 56/112 应画 50%（按 100 血算会画成 56%）',
+    Math.abs(rb1 - 0.5) < 0.02 && Math.abs(rb0 - 0.5) < 0.02,
+    `先手 50/100=${(rb0 * 100).toFixed(1)}% ｜ 后手 56/112=${(rb1 * 100).toFixed(1)}%`);
+
+  // K3 结算页如实写贴目血：后手满血 112 获胜时文案必须是 112，不是被夹成 100（F5）
+  await nav();
+  await clickId('btn-solo');
+  await waitFor('window.__debug.ready() && __debug.state().phase === "aim"', 6000);
+  await newBattle('solo', 'medium', 70702);
+  await waitFor(`__debug.state() && __debug.state().phase === 'aim'`, 6000);
+  const preK = await evaluate(`(() => { const s=__debug.game.scene.getScene('battle').s;
+    return { winHp: s.players[1].hp, winMax: s.players[1].hpMax, mode: UI.mode() }; })()`);
+  await evaluate(`(() => { const sc=__debug.game.scene.getScene('battle'), s=sc.s;
+    s.players[0].hp = 0; sc.endGame(1); return true; })()`);
+  await sleep(1000);   // showOver 在 endGame 后 560ms 才弹，早读会读到 index.html 里的占位文案
+  const overK = await evaluate(`(() => ({ show: !document.getElementById('over').hidden,
+    title: document.getElementById('over-title').textContent,
+    sub: document.getElementById('over-sub').textContent }))()`);
+  const mK = /剩余血量 (\d+) 对 (\d+)/.exec(overK.sub || '');
+  check('K3 结算页如实写贴目血（112 对 0），不夹到 100（F5）',
+    overK.show && !!mK && Number(mK[1]) === Math.round(preK.winHp) && Number(mK[1]) === preK.winMax && Number(mK[1]) > 100,
+    `模式=${preK.mode}「${overK.title}」「${overK.sub}」胜方 hp=${preK.winHp}/${preK.winMax}`);
+
+  // K4 重开不叠加、不丢失：打残后重开，满血回到 [100, 112]，灼烧清空
+  await evaluate(`(() => { const sc=__debug.game.scene.getScene('battle'), s=sc.s;
+    s.players[0].hp = 7; s.players[1].hp = 7; s.players[1].burn = { turns: 3, dmg: 2 }; return true; })()`);
+  await newBattle('solo', 'medium', 70703);
+  await waitFor(`__debug.state() && __debug.state().phase === 'aim'`, 6000);
+  const re = await evaluate(`(() => { const s=__debug.game.scene.getScene('battle').s;
+    return { hp: s.players.map(p=>p.hp), max: s.players.map(p=>p.hpMax), burns: s.players.map(p=>!!p.burn) }; })()`);
+  check('K4 重开后贴目重新发放（[100,112]），不叠加、不残留灼烧',
+    re.hp[0] === 100 && re.hp[1] === 112 && re.max[0] === 100 && re.max[1] === 112 && !re.burns[0] && !re.burns[1],
+    `hp=${re.hp.join('/')} hpMax=${re.max.join('/')} burn=${re.burns.join('/')}`);
+
+  // --only-k：K 组跑完就收（变异审计/增量复验用，省得重跑整个浏览器矩阵）
+  if (process.argv.includes('--only-k')) { console.log('（--only-k：K 组结束即退出）'); return; }
+
+  // ══════════════════════════════════════════════════════════
   console.log('\n══ C. 开局取景：第一回合当前射手在不在画面里（F10）══');
   for (const vp of [{ w: 390, h: 844, dsf: 3, tag: '390×844 竖屏' }, { w: 844, h: 390, dsf: 2, tag: '844×390 横屏' },
                     { w: 1280, h: 800, dsf: 1, tag: '1280×800 桌面' }]) {

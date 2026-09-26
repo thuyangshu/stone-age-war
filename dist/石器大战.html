@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#6B4530">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<!-- 石器大战 单文件版 · 打包于 2026-09-26 18:56 · 由 build.mjs 从源码生成，请勿手改 -->
+<!-- 石器大战 单文件版 · 打包于 2026-09-26 23:07 · 由 build.mjs 从源码生成，请勿手改 -->
 <!--
 # 第三方库与许可证
 
@@ -645,6 +645,10 @@ const DATA = {
   TITLE: '石器大战',
   HP: 100,        // 双方满血
   HIT_R: 26,      // 角色受击半径（px，世界坐标）
+  // 贴目：后手（player 1）开局多这么多血，抹平回合顺序带来的结构性先手优势。
+  // 按**回合顺序**发，不按"人/AI"发——人机、双人、AI 对战三种走法同一条规则。
+  // 取值是量出来的，不是拍的：依据、曲线、以及"为什么是 12 不是 13"见下方"先手优势与贴目"段
+  KOMI: 12,
 
   PHYS: {
     G: 900,           // 基础重力 px/s²（各武器按 gMul 缩放）
@@ -714,25 +718,40 @@ const DATA = {
   // 所以要拉开档次只能把误差顶到圈**边缘**：medium 散布调到约 44px。
   // 这不是把 medium 调弱，是让它第一次成为"打得中但不保证"的中档。
   //
-  // 定档结果（bot-playtest 口径，每档 200 局 × 两套独立种子，按 95% 置信区间判定）：
-  //   easy 打 medium  17.5% / 18.5%（验收 ≤30%，区间上沿 24.4% / 25.4%）✅
-  //   hard 打 medium  84.0% / 87.0%（验收 ≥75%，区间下沿 77.1% / 80.1%）✅
-  //   medium 镜像先手 55.0% / 61.0%（验收 45~55%）❌ 未达标，见下方"先手优势"段
+  // 定档结果（每档两套独立种子 × 2400 局，按 95% 置信区间判定；口径与最小 N 的
+  // 算术说明见 docs/需求与验收.md §五）：
+  //   easy 打 medium  15.1% / 13.8% ✅（验收 ≤30%）
+  //   medium 镜像先手 50.5% / 51.7% ✅（验收 45~55%，贴目之后达标，见下）
+  //   hard 打 medium  81.6% / 81.2% ✅（验收 ≥75%）
   // 锁定目标（同一目标第 5 发）后的单发直击率：easy 33% / medium 68% / hard 94%——
   // 三档终于分得开了。首发（hist=0）三档一律 0%，那是 F30 的硬保证。
   //
-  // 先手优势（设计红线。**当前未达标**，非调参问题，待作者裁决）：
-  // 镜像局里唯一的不对称就是回合顺序，所以"先手胜率"量的就是回合顺序值多少。
-  // 实测 medium 55~63%（四套种子各 400 局：59.5 / 62.5 / 57.5 / 62.7，线是 45~55）。
-  // 这不是误差没调好，是**轮流竞速的结构性产物**：双方轮流打，先攒够致命发数者胜，
-  // 于是赢家出手次数恒 ≥ 输家——400 局 × 三档实测，这条恒等式 100% 成立。
-  // 优势随命中率单调放大：easy ~53%（打得不准，先后手差不多）、medium ~60%、
-  // hard ~80%（初版 98% 就是这条曲线的顶端）。
-  // **HP 补偿治不了**：给后手加血在 hard 档是刀锋式的——+4 时 80.7%、+6 时 41.0%，
-  // 中间没有可用值（加血把先手方的"致命发数"推高一发，命中发数的奇偶一翻，
-  // 胜负就整体倒向另一边）。要真消除只能改回合规则，属玩法改动，不在调参范围。
-  // 品类内这是常态（Worms / Pocket Tanks / Tank Stars 同为轮流制）；人机模式里
-  // 先手恒为玩家，优势在玩家这一侧（该"恒"与 game.js 第 34 行注释不符，已报审计）。
+  // 先手优势与贴目（KOMI）：
+  // 镜像局里双方 AI 相同、目标相同，**唯一的不对称就是回合顺序**，所以"先手胜率"
+  // 量的就是回合顺序值多少。贴目前的实测（`node tools/komi-curve.cjs 2400 easy,medium,hard 0`，
+  // N=2400/档/套，种子基 A `5000+13i` / B `20260000+31i`，ci=±2.0%）：
+  //   easy 50.7 / 51.3、medium 59.8 / 61.0 ❌、hard 81.1 / 81.5
+  // ——优势随命中率单调放大。机制是**轮流竞速**：双方轮流打、先攒够致命发数者胜，
+  // 于是赢家出手次数恒 ≥ 输家（400 局 × 三档实测，这条恒等式 100% 成立），
+  // 后手方往往来不及还手。
+  // 处置是给后手**贴目**（围棋 komi 同思路，用一个标量把回合顺序的价值补回来）：
+  // 后手开局多 KOMI 点血。
+  //
+  // 为什么取 12（`node tools/komi-curve.cjs 2400` 的原样输出，只覆写本文件这个 KOMI 值，
+  // logic.js 一个字不动，可原样复跑）：
+  //   贴目 0      medium 59.8 / 61.0 ❌ 越线（就是上面那条未达标）；hard 81.1 / 81.5
+  //   贴目 11     50.7 / 51.8 ✅；hard 25.3 / 24.9
+  //   贴目 12     50.5 / 51.7 ✅；hard 25.3 / 24.9  ← 取这个
+  //   贴目 12.5   49.5 / 50.2 ✅，但 **hard 从 25.3 掉到 14.9 / 13.5**——越过"一片倒"的界，
+  //               等于把先手优势换成了后手优势，只是换了个方向（13 与 12.5 逐位相同）
+  // 一个标量治不了三档：先手优势本身随命中率变（easy ~51% / medium 60% / hard 81%），
+  // 在 medium 校准的值对 easy 略过头、对 hard 远远过头。12 是"medium 达标、
+  // 且 hard 镜像还没翻面"的最大值。hard 镜像是**诊断量不是玩法模式**（实战里不会出现
+  // 两个 hard 互打），不为它牺牲 medium 这条真有验收线的档。
+  // 残留（如实记）：medium 镜像落在 51.1%（两族各 2400 局合并；分族 50.5 / 51.7），
+  // 离 50 还差约 1.1 点——在 45~55 线内，但稳定偏上半区。要再往中间压就得动 hard 镜像，
+  // 或者把贴目改成随命中率变的函数，那是玩法改动，不在本次调参范围。
+  // 品类内先手优势是常态（Worms / Pocket Tanks / Tank Stars 同为轮流制），本项目选择补掉它。
   AI: {
     easy:   { angErr: 0.156, powErr: 0.180, missChance: 0.30, pickRandom: 3, greedy: 0 },
     medium: { angErr: 0.040, powErr: 0.080, missChance: 0.15, pickRandom: 0, greedy: 0.8 },
@@ -1610,9 +1629,12 @@ const LOGIC = ((DATA, WORLD) => {
 
   // ---------- 整局推演 ----------
   // 纯逻辑跑完一整局（bot-playtest 难度回归 与 fuzz 测试共用，不涉及任何渲染）
+  // i 就是回合顺序（0 先手 / 1 后手），贴目按它发——不按"人/AI"发，
+  // 这样人机、双人、AI 对战三种走法用的是同一条规则
   function newPlayer(spawn, i) {
     const ammo = newAmmo();
-    return { x: spawn.x, y: spawn.y, hp: DATA.HP, burn: null, ammo, shots: 0, idx: i };
+    const hpMax = DATA.HP + (i === 1 ? DATA.KOMI : 0);
+    return { x: spawn.x, y: spawn.y, hp: hpMax, hpMax, burn: null, ammo, shots: 0, idx: i };
   }
 
   // data.js 里 ammo:0 表示"无限"；这里换成 Infinity，让"还有弹药吗"统一成 >0 一个判断，
@@ -2204,6 +2226,7 @@ class BattleScene extends Phaser.Scene {
 
   // ---------------- 开局 ----------------
   startBattle(mode, level, seed) {
+    this.abandon();                 // 先把上一局残留的回调/补间作废（见 abandon 的注释）
     const w = LOGIC.newBattle(seed === undefined ? (Math.random() * 1e9) | 0 : seed);
     this.s = {
       mode, level,
@@ -2218,8 +2241,30 @@ class BattleScene extends Phaser.Scene {
     };
     this.buildScene();
     UI.onBattleReady();
-    // 先手方未必是玩家：人机模式里 AI 可能先手
-    this.time.delayedCall(220, () => this.beginTurn(true));
+    this.later(220, () => this.beginTurn(true));
+  }
+
+  // 延时回调一律走这里。场景时钟上的回调不会因为"开了新一局"自动作废：
+  // buildScene() 只清显示对象、不清时钟，于是上一局排下的 nextTurn / endGame
+  // 会在新一局里醒来。实测两个后果（测试方 T-4/T-5 两轮独立复现）：
+  //   ① 命中落地后那 IMPACT_HOLD 内点重开 → 新局被上一局的 nextTurn 推进，
+  //      玩家一的回合被跳过，直接变成玩家二；
+  //   ② 击杀结算那 620ms 内点重开 → 满血 100/100 的新局被判出胜负，
+  //      弹窗写"玩家一 获胜 / 剩余血量 100 对 100"。
+  // 局次号在开局与回主菜单时各 +1，回调醒来先比对，过期直接返回。
+  later(ms, fn) {
+    const g = this.gen;
+    return this.time.delayedCall(ms, () => { if (this.gen === g) fn(); });
+  }
+
+  // 把"当前这一局"整局作废：局次号 +1（让已投递、撤不回来的回调醒来即弃），
+  // 再清空场景时钟与补间。开新局和回主菜单都要走这一步——
+  // 回主菜单那条尤其不能省：toTitle() 只把 s 置空、显示对象清掉，时钟照样在走，
+  // 上一局的 nextTurn 醒来后会去读 null 的 s。
+  abandon() {
+    this.gen = (this.gen || 0) + 1;
+    this.time.removeAllEvents();
+    this.tweens.killAll();          // 上一局的补间都指着上一局已销毁的精灵
   }
 
   buildScene() {
@@ -2350,7 +2395,7 @@ class BattleScene extends Phaser.Scene {
     if (this.isHuman()) return;
     // AI：先"思考"再"瞄准"再出手，三段留白让玩家看清它在干什么
     s.phase = 'think';
-    this.time.delayedCall(s.thinkMs, () => {
+    this.later(s.thinkMs, () => {
       if (!this.s || this.s.winner !== null) return;
       if (this.s.turn !== s.turn) return;
       this.aiTurn();
@@ -2369,7 +2414,7 @@ class BattleScene extends Phaser.Scene {
     SFX.play('click');
     // 瞄准演出：把这条瞄准线亮一下，玩家能看出 AI 打算往哪打
     this.showAimLine(aim.angle, Math.min(1, aim.power * 1.06));
-    this.time.delayedCall(DATA.TURN.AI_AIM_MS, () => {
+    this.later(DATA.TURN.AI_AIM_MS, () => {
       if (!this.s || this.s.winner !== null || this.s.turn !== s.turn) return;
       this.clearAim();
       this.fire(aim.angle, aim.power);
@@ -2495,7 +2540,7 @@ class BattleScene extends Phaser.Scene {
     this.tweens.add({ targets: this.heroes[s.turn], duration: 220, yoyo: true, repeat: 1,
       y: this.heroes[s.turn].y - 5, ease: 'Quad.out' });
     this.setPose(s.turn, 'throw');
-    this.time.delayedCall(280, () => this.setPose(s.turn, 'idle'));
+    this.later(280, () => this.setPose(s.turn, 'idle'));
     UI.syncWeapon();
     UI.setPhase('fly');
     return proj;
@@ -2583,7 +2628,7 @@ class BattleScene extends Phaser.Scene {
       return;
     } else if (t === 'out') {
       UI.setPhase('impact');
-      return this.time.delayedCall(DATA.TURN.IMPACT_HOLD * 0.6, () => this.nextTurn());
+      return this.later(DATA.TURN.IMPACT_HOLD * 0.6, () => this.nextTurn());
     } else {
       SFX.play(t === 'direct' ? 'crack' : 'thud');
       this.sparks.setParticleTint(DATA.COLORS.dTop);
@@ -2601,7 +2646,7 @@ class BattleScene extends Phaser.Scene {
       this.floatText(tp.x, tp.y - 118 - Math.random() * 14, `-${h.dmg}`, h.kind === 'direct' ? '#FFD9A0' : '#E0863C');
       this.hitBurst(tp.x, tp.y - 60, h.kind === 'direct' ? 0xFFD9A0 : 0xE0863C, h.kind === 'direct' ? 14 : 8);
       this.setPose(h.who, 'hit');
-      this.time.delayedCall(320, () => this.setPose(h.who, 'idle'));
+      this.later(320, () => this.setPose(h.who, 'idle'));
     }
     if (out.hits.some((h) => h.who === s.turn)) SFX.play('hurt', 300);
     UI.syncHp();
@@ -2609,8 +2654,8 @@ class BattleScene extends Phaser.Scene {
     UI.setPhase('impact');
 
     const dead = s.players.findIndex((p) => p.hp <= 0);
-    if (dead >= 0) { this.time.delayedCall(620, () => this.endGame(1 - dead)); return; }
-    this.time.delayedCall(DATA.TURN.IMPACT_HOLD, () => this.nextTurn());
+    if (dead >= 0) { this.later(620, () => this.endGame(1 - dead)); return; }
+    this.later(DATA.TURN.IMPACT_HOLD, () => this.nextTurn());
   }
 
   addDecal(wp, x, y, type) {
@@ -2716,7 +2761,7 @@ class BattleScene extends Phaser.Scene {
     this.clearAim();
     this.cameras.main.pan(s.players[winner].x, s.players[winner].y - 40, 500, 'Sine.easeInOut');
     SFX.play(winner === 0 || s.mode === 'duo' ? 'win' : 'lose');
-    this.time.delayedCall(560, () => UI.showOver(winner));
+    this.later(560, () => UI.showOver(winner));
   }
 
   // ---------------- 回合计时 ----------------
@@ -2849,7 +2894,9 @@ const UI = (() => {
     paused = false;
     const sc = scene();
     if (sc && sc.sys.isPaused()) sc.sys.resume();
-    if (sc) { sc.s = null; sc.children.removeAll(true); }
+    // 先把这一局作废再清显示对象：只置空 s、只 removeAll 的话，场景时钟还在走，
+    // 上一局的 nextTurn 醒来会去读 null 的 s（测试方 T-5 报的重开竞态同源）
+    if (sc) { sc.abandon(); sc.s = null; sc.children.removeAll(true); }
   }
 
   // 场景搭好地形与角色后回调
@@ -2885,7 +2932,9 @@ const UI = (() => {
       const card = $('p' + i + 'card');
       if (!card) return;
       const fill = card.querySelector('.hpfill');
-      const pct = Math.max(0, Math.min(1, p.hp / DATA.HP));
+      // 按各人自己的满血算（后手有贴目，满血比别人多），不是按全局 DATA.HP——
+      // 否则后手开局就是一条 112% 的溢出条
+      const pct = Math.max(0, Math.min(1, p.hp / (p.hpMax || DATA.HP)));
       fill.style.width = (pct * 100) + '%';
       fill.classList.toggle('low', pct <= 0.34);
       const burn = card.querySelector('.burn');
@@ -3086,6 +3135,11 @@ window.addEventListener('load', () => {
         spawns: s.world.spawns.map((q) => ({ x: q.x, y: q.y })),
         ponds: s.world.ponds.length, bushes: s.world.bushes.length,
         fps: Math.round(game.loop.actualFps),
+        // Phaser 的帧时间戳（毫秒，rAF 给的时间，等价于墙钟）。核对过 vendor 源码：
+        // Phaser.TimeStep 里是 `this.time = t`，t 来自 rAF，不是积累的 delta。
+        // 所以它只回答"页面还在不在渲染"，**不能**当游戏进度用——CPU 被压满时它照走。
+        // 冒烟 S4 的进度判据用 phase/turn/shots 那几个语义量，这个只用于失败时打线索
+        clock: Math.round(game.loop.time),
       };
     },
     start(mode = 'solo', level = 'medium', seed) {

@@ -108,7 +108,9 @@ const UI = (() => {
     paused = false;
     const sc = scene();
     if (sc && sc.sys.isPaused()) sc.sys.resume();
-    if (sc) { sc.s = null; sc.children.removeAll(true); }
+    // 先把这一局作废再清显示对象：只置空 s、只 removeAll 的话，场景时钟还在走，
+    // 上一局的 nextTurn 醒来会去读 null 的 s（测试方 T-5 报的重开竞态同源）
+    if (sc) { sc.abandon(); sc.s = null; sc.children.removeAll(true); }
   }
 
   // 场景搭好地形与角色后回调
@@ -144,7 +146,9 @@ const UI = (() => {
       const card = $('p' + i + 'card');
       if (!card) return;
       const fill = card.querySelector('.hpfill');
-      const pct = Math.max(0, Math.min(1, p.hp / DATA.HP));
+      // 按各人自己的满血算（后手有贴目，满血比别人多），不是按全局 DATA.HP——
+      // 否则后手开局就是一条 112% 的溢出条
+      const pct = Math.max(0, Math.min(1, p.hp / (p.hpMax || DATA.HP)));
       fill.style.width = (pct * 100) + '%';
       fill.classList.toggle('low', pct <= 0.34);
       const burn = card.querySelector('.burn');

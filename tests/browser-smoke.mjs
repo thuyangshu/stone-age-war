@@ -189,6 +189,8 @@ async function main() {
   // 每次重新加载页面都要重取一遍（换设备重载后是新的一份 DATA）
   DATA_WEAPON_COUNT = await evaluate('DATA.WEAPONS.length');
   DATA_CAM_MIN = await evaluate('DATA.CAM.minZoom');
+  DATA_HP = await evaluate('DATA.HP');
+  DATA_KOMI = await evaluate('DATA.KOMI');   // 后手贴目，player 1 开局多这么多血
   await evaluate(AIM_HIT);
   // 记下每次命中类型：失败时能一眼看出是打偏、撞灌木还是落水，不用回头猜
   await evaluate(`(() => { const sc=__debug.game.scene.getScene('battle'); window.__impacts=[];
@@ -215,7 +217,11 @@ async function main() {
   let s = await st();
   d = await dom();
   check('S2 开局：HUD/武器栏出现、8 个武器槽', d.hud && d.weapons && d.slots === DATA_WEAPON_COUNT, `slots=${d.slots}`);
-  check('S2 双方满血、有站位', s.hp[0] === 100 && s.hp[1] === 100 && s.spawns.length === 2);
+  // 满血的准确值从页面读，不写死 100：后手有贴目（DATA.KOMI），写死会让改数值时
+  // 这条断言悄悄变成"错的"却仍写着"满血"
+  check('S2 双方满血、有站位',
+    s.hp[0] === DATA_HP && s.hp[1] === DATA_HP + DATA_KOMI && s.spawns.length === 2,
+    `hp=${s.hp.join('/')}（满血 ${DATA_HP}/${DATA_HP + DATA_KOMI}）`);
 
   // S2b 地形要盖满视野。宽屏下适配缩放被高度卡住，视野比世界那 1600px 宽，
   // 地形只画世界尺寸的话左右会露出两条直角切口——地形看着像浮在背景上的方块
@@ -256,19 +262,32 @@ async function main() {
   // 不是可以压掉的等待——满血 100 打完要 16 发上下、40 秒，冒烟就得给够预算。
   // 压到 60 血既能让对局真实跑完（同一套瞄准→飞行→结算→换边循环），又不至于拖垮整条闸门。
   await evaluate('__debug.setHp(0, 60); __debug.setHp(1, 60);');
-  // 按墙钟给预算而不是按轮询次数：一次轮询要一个 CDP 往返，机器一忙往返就变慢，
-  // 按次数计会在同一局上误判超时（实测机器有负载时偶发 22/23）。
-  // 预算 120 秒：这局压到 60 血，约 10~16 发、一发飞行约 2 秒游戏时间，本来十几秒就完。
-  // 120 秒是给"机器被压满、页面时钟跟着被拖慢"留的余量——实测 load 17、十几个 Chrome
-  // 实例同时在跑时，同一条循环 75 秒只推进了 2 发（那次的 75 秒预算就这么误判了）。
-  // 余量不影响判定力：真卡住时一发都推不动，给多久都是失败，只是失败信息要留够线索
-  const dl = Date.now() + 120000;
-  let winner = null, blocked = 0, lastPhase = '';
-  while (Date.now() < dl) {
+  // 预算按**游戏进度**给，不按墙钟（2026-09-27 改，审计一般#3）。
+  // 上一版按墙钟给 120 秒，方向对（比按轮询次数强：一次轮询一个 CDP 往返，机器一忙
+  // 往返就慢），但没治根——CPU 被压满时页面时钟跟着被拖慢，同样长的墙钟里推进的游戏
+  // 时间只剩零头，墙钟给多少都可能不够；反过来真卡死时墙钟给多少都是失败，只是线索不同。
+  // 现在判据换成"这局还在不在推进"：sig() 把 phase/turn/shots/hp 串成一个语义指纹，
+  // 指纹一变就重置停滞计时，连续 STALL_MS 不动才判失败。外侧留一个宽松的墙钟上限兜底，
+  // 防"永远缓慢推进"把闸门吊死。失败时一并打印 fps 与页面时钟，好区分
+  // "页面根本没在渲染"还是"渲染着但游戏不推进"。
+  // 注：state().clock 是 Phaser 的帧时间戳（rAF 给的，等价墙钟），只回答"页面还在不在渲染"，
+  // 不能当进度用——进度只认 sig() 里那几个语义量。
+  const STALL_MS = 20000, HARD_MS = 300000;
+  const sig = (c) => [c.phase, c.turn, c.winner, ...(c.shots || []), ...(c.hp || [])].join('|');
+  const hardDl = Date.now() + HARD_MS;
+  let winner = null, blocked = 0, lastPhase = '', lastSig = '', lastMove = Date.now(), stop = '';
+  for (;;) {
     const cur = await st();
     lastPhase = cur.phase;
+    const fp = sig(cur);
+    if (fp !== lastSig) { lastSig = fp; lastMove = Date.now(); }
     if (cur.winner !== null) { winner = cur.winner; break; }
     if (cur.phase === 'hidden' || cur.phase === 'over') break;
+    if (Date.now() - lastMove > STALL_MS) {
+      stop = `停滞 ${Math.round((Date.now() - lastMove) / 1000)}s：phase/发数/血量一个都不动`;
+      break;
+    }
+    if (Date.now() > hardDl) { stop = `触到 ${HARD_MS / 1000}s 墙钟上限（还在推进，只是太慢）`; break; }
     // 用解算出的真实角度出手，保证能打中，别让冒烟靠运气
     const r = await evaluate(`(() => {
       if (__debug.game.scene.getScene('battle').s.phase === 'handoff') { document.getElementById('btn-handoff').click(); return 'handoff'; }
@@ -279,7 +298,8 @@ async function main() {
   }
   s = await st();
   check('S4 完整对局分出胜负', s.winner === 0 || s.winner === 1,
-    `winner=${s.winner} 打了 ${Math.max(...s.shots)} 发，收尾 phase=${lastPhase}，助手判 blocked ${blocked} 次`);
+    `winner=${s.winner} 打了 ${Math.max(...s.shots)} 发，收尾 phase=${lastPhase}，助手判 blocked ${blocked} 次`
+    + `，fps=${s.fps} 页面时钟=${s.clock}ms${stop ? '，' + stop : ''}`);
   await waitFor(`!document.getElementById('over').hidden`, 4000);
   const over = await dom();
   check('S4 结算页弹出且写明胜方', over.over);
@@ -399,6 +419,8 @@ async function main() {
   // 每次重新加载页面都要重取一遍（换设备重载后是新的一份 DATA）
   DATA_WEAPON_COUNT = await evaluate('DATA.WEAPONS.length');
   DATA_CAM_MIN = await evaluate('DATA.CAM.minZoom');
+  DATA_HP = await evaluate('DATA.HP');
+  DATA_KOMI = await evaluate('DATA.KOMI');   // 后手贴目，player 1 开局多这么多血
   await evaluate(AIM_HIT);
   await tap('btn-duo');                       // 触屏点按钮开局（重载后还没对局，state() 是 null）
   await waitFor('window.__debug.ready() && __debug.state().mode === "duo"', 5000);
@@ -526,8 +548,110 @@ async function main() {
   await tap('btn-pause'); await sleep(200);
   await tap('btn-restart'); await sleep(900);
   s = await st();
-  check('S12 重开是一局新的满血对局', s && s.hp[0] === 100 && s.hp[1] === 100 && s.winner === null && s.shots[0] < beforeRestart,
-    `hp=${s && s.hp.join('/')} shots=${s && s.shots[0]}`);
+  check('S12 重开是一局新的满血对局',
+    s && s.hp[0] === DATA_HP && s.hp[1] === DATA_HP + DATA_KOMI && s.winner === null && s.shots[0] < beforeRestart,
+    `hp=${s && s.hp.join('/')}（满血 ${DATA_HP}/${DATA_HP + DATA_KOMI}） shots=${s && s.shots[0]}`);
+
+  // S12b 重开竞态回归（测试方 T-4/T-5 报、审计 A-9 严重#1 独立复现，此前冒烟测不到）
+  // 根因：场景时钟上的 delayedCall 不随重开作废，上一局的 nextTurn / endGame 会在新局里醒来。
+  // 为什么老冒烟漏了：S12 重开时"没有弹丸在飞"，上一局没排下任何回调，是这条路径的盲点。
+  // 两个可复现窗口，这里各打一遍，都走真实 UI 路径（暂停 → 重开）：
+  //   ① 非致命命中刚判定、还没交接时重开 → 旧局的 nextTurn 推进新局，玩家一的回合被跳过
+  //   ② 致命命中刚判定、还没结算时重开（对手压到 1 血）→ 新局被判出胜负，结算页写"100 对 112"
+  // 触发点都是"命中已判定、旧局还没交接"那段（IMPACT_HOLD 800ms / 击杀 620ms）——
+  // 旧局正是在那一刻往时钟上排回调。**飞行中**重开排不到任何回调，不构成窗口：
+  // 最初把窗口①写成"飞行中"，在未修复的代码上照样绿，是个假窗口，已改。
+  // 两个窗口都验过有牙：在修复前的代码上跑，②稳定报红（结算页弹出、winner=0）。
+  // 断言不只看重开那一瞬，而是接着观察 5 秒（旧回调本该在这段时间里醒来）：
+  // 新局必须始终满血、turn 停在 0、发数 0/0、结算页不弹。
+  // 5 秒足够：回合软时限是 30 游戏秒，而 headless 里页面时钟比墙钟慢，正常不会误触发。
+  async function restartRace(waitExpr, lethal) {
+    // lethal：对手压到 1 血、这一发必杀 → 旧局排下的回调是 endGame；不 lethal → 是 nextTurn。
+    // 两个窗口要的正是这两种回调各一条，所以不能都用 lethal
+    // 每个窗口都先回到一局干净的新局。未修复时上一个窗口会把局面搞脏（turn 跳到 1、
+    // 停在 handoff），不重置的话第二个窗口会连锁失败在一个无关的原因上——
+    // 实测报的是 "这一发没打出去（not-aim）"，那线索会把人带偏
+    let clean = false;
+    for (let i = 0; i < 25; i++) {
+      const c = await st();
+      if (c && c.phase === 'aim' && c.turn === 0 && c.winner === null && c.shots[0] === 0) { clean = true; break; }
+      await tap('btn-pause'); await sleep(100);
+      await tap('btn-restart'); await sleep(400);
+    }
+    if (!clean) {
+      // 复位用的是"重开"，而未修复时重开这条路本身就是坏的（正是被测量的缺陷），
+      // 于是复位可能也失败。这时报"复位失败"，别把它伪装成"跳过"——那是同一个病的症状
+      return { skip: '复位失败：连重开都回不到干净的新局（这本身就是重开竞态的症状）' };
+    }
+    await evaluate(lethal ? '__debug.setHp(1, 1);' : '__debug.setHp(1, DATA.HP);');
+    // 触发必须发生在**页面里**：窗口只有 IMPACT_HOLD = 900ms 游戏时间，而 CDP 一个往返
+    // 就是几十毫秒，外部"轮询发现 impact → 再点暂停"整条路会**整个错过窗口**——实测
+    // 点下去时旧局已经交接完了（phase=handoff、turn=1），看起来像"重开没生效"，
+    // 其实是根本没点进窗口，测的根本不是那个竞态。
+    // 改成在页面里用 rAF 盯同一个条件，一命中立刻走真实 UI 按钮，不赔往返。
+    // 顺带点一下暂停：它把场景时钟冻住，这 900ms 的窗口就不再流逝，判定不再和调度赛跑
+    await evaluate(`(() => {
+      window.__race = null;
+      const tick = () => {
+        if (__debug.ready() && (${waitExpr})) {
+          window.__race = __debug.state();
+          document.getElementById('btn-pause').click();
+          // 重开要等两帧再点。真人也是先看见遮罩、再点按钮，两下不可能落在同一帧；
+          // 同一帧连点会把"暂停"和"重开"两个场景操作排进同一次队列派发，队列里的暂停
+          // 落到已经被重开拆掉的场景上，Phaser 报 "Cannot pause non-running Scene"。
+          // 那是同帧连点造出来的假告警（实测隔两帧就没了），不是产品缺陷，别去改产品迁就它
+          requestAnimationFrame(() => requestAnimationFrame(
+            () => document.getElementById('btn-restart').click()));
+          return;
+        }
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    })()`);
+    const fired = await evaluate('__aimHit()');
+    if (fired !== 'fired') return { skip: `这一发没打出去（${fired}）` };
+    let race = null;
+    const t0 = Date.now();
+    while (Date.now() - t0 < 15000 && !race) {
+      race = await evaluate('window.__race');
+      if (!race) await sleep(16);
+    }
+    if (!race) return { skip: `页面里的自触发没等到 ${waitExpr}（15s）` };
+    const t1 = Date.now();
+    let sawOver = false, maxTurn = -1, last = null, sawNull = false;
+    while (Date.now() - t1 < 5000) {
+      last = await st();
+      if (!last) { sawNull = true; break; }
+      maxTurn = Math.max(maxTurn, last.turn);
+      if (await evaluate(`!document.getElementById('over').hidden`)) sawOver = true;
+      await sleep(40);
+    }
+    // race 一并带回去，进失败详情：失败时要能一眼看出"到底有没有点进窗口"。
+    // 这一条吃过亏——窗口没点进去时现象（末态是旧局在跑）和"重开没生效"一模一样，
+    // 只看末态会把"测错了"当成"产品坏了"，反过来也会把假绿当成通过
+    return { last, sawOver, maxTurn, sawNull, race };
+  }
+
+  // 两个窗口的触发点都是"命中已判定、旧局还没交接"这段（IMPACT_HOLD 800ms / 击杀 620ms）：
+  // 这才是旧局往时钟上排回调的时刻。**飞行中**重开排不到任何回调（那时候定时器还没排），
+  // 所以不构成窗口——最初把窗口①写成"飞行中"，实测在未修复的代码上也照样绿，是假窗口。
+  const raceCases = [
+    ['非致命命中后重开', `__debug.state().phase === 'impact'`, false],
+    ['击杀判定中重开', `__debug.state().phase === 'impact'`, true],
+  ];
+  for (const [tag, waitExpr, lethal] of raceCases) {
+    const r = await restartRace(waitExpr, lethal);
+    if (r.skip) { check(`S12b ${tag}：新局干净`, false, r.skip); continue; }
+    const c = r.last;
+    const ok = !r.sawNull && !r.sawOver && r.maxTurn === 0 && c && c.winner === null
+      && c.shots[0] === 0 && c.shots[1] === 0
+      && c.hp[0] === DATA_HP && c.hp[1] === DATA_HP + DATA_KOMI;
+    check(`S12b ${tag}：新局干净`, ok,
+      `观察 5s 内 maxTurn=${r.maxTurn} 结算页=${r.sawOver} 末态 phase=${c && c.phase} `
+      + `hp=${c && c.hp.join('/')} shots=${c && c.shots.join('/')} winner=${c && c.winner}`
+      + `｜重开点在了 phase=${r.race.phase} turn=${r.race.turn} shots=${r.race.shots.join('/')}`
+      + `（若不是 impact/turn 0/这一局刚出手，说明窗口根本没点进去，别当产品故障查）`);
+  }
 
   // S13 静音
   const icon = await evaluate(`__debug.mute()`);
@@ -544,7 +668,7 @@ async function main() {
 }
 
 // 这两个值在 main() 里从页面读（见读 DATA.WEAPONS.length 处），这里只开声明
-let DATA_WEAPON_COUNT, DATA_CAM_MIN;
+let DATA_WEAPON_COUNT, DATA_CAM_MIN, DATA_HP, DATA_KOMI;
 
 let code = 0;
 try {

@@ -17,6 +17,7 @@ class BattleScene extends Phaser.Scene {
 
   // ---------------- 开局 ----------------
   startBattle(mode, level, seed) {
+    this.abandon();                 // 先把上一局残留的回调/补间作废（见 abandon 的注释）
     const w = LOGIC.newBattle(seed === undefined ? (Math.random() * 1e9) | 0 : seed);
     this.s = {
       mode, level,
@@ -31,8 +32,30 @@ class BattleScene extends Phaser.Scene {
     };
     this.buildScene();
     UI.onBattleReady();
-    // 先手方未必是玩家：人机模式里 AI 可能先手
-    this.time.delayedCall(220, () => this.beginTurn(true));
+    this.later(220, () => this.beginTurn(true));
+  }
+
+  // 延时回调一律走这里。场景时钟上的回调不会因为"开了新一局"自动作废：
+  // buildScene() 只清显示对象、不清时钟，于是上一局排下的 nextTurn / endGame
+  // 会在新一局里醒来。实测两个后果（测试方 T-4/T-5 两轮独立复现）：
+  //   ① 命中落地后那 IMPACT_HOLD 内点重开 → 新局被上一局的 nextTurn 推进，
+  //      玩家一的回合被跳过，直接变成玩家二；
+  //   ② 击杀结算那 620ms 内点重开 → 满血 100/100 的新局被判出胜负，
+  //      弹窗写"玩家一 获胜 / 剩余血量 100 对 100"。
+  // 局次号在开局与回主菜单时各 +1，回调醒来先比对，过期直接返回。
+  later(ms, fn) {
+    const g = this.gen;
+    return this.time.delayedCall(ms, () => { if (this.gen === g) fn(); });
+  }
+
+  // 把"当前这一局"整局作废：局次号 +1（让已投递、撤不回来的回调醒来即弃），
+  // 再清空场景时钟与补间。开新局和回主菜单都要走这一步——
+  // 回主菜单那条尤其不能省：toTitle() 只把 s 置空、显示对象清掉，时钟照样在走，
+  // 上一局的 nextTurn 醒来后会去读 null 的 s。
+  abandon() {
+    this.gen = (this.gen || 0) + 1;
+    this.time.removeAllEvents();
+    this.tweens.killAll();          // 上一局的补间都指着上一局已销毁的精灵
   }
 
   buildScene() {
@@ -163,7 +186,7 @@ class BattleScene extends Phaser.Scene {
     if (this.isHuman()) return;
     // AI：先"思考"再"瞄准"再出手，三段留白让玩家看清它在干什么
     s.phase = 'think';
-    this.time.delayedCall(s.thinkMs, () => {
+    this.later(s.thinkMs, () => {
       if (!this.s || this.s.winner !== null) return;
       if (this.s.turn !== s.turn) return;
       this.aiTurn();
@@ -182,7 +205,7 @@ class BattleScene extends Phaser.Scene {
     SFX.play('click');
     // 瞄准演出：把这条瞄准线亮一下，玩家能看出 AI 打算往哪打
     this.showAimLine(aim.angle, Math.min(1, aim.power * 1.06));
-    this.time.delayedCall(DATA.TURN.AI_AIM_MS, () => {
+    this.later(DATA.TURN.AI_AIM_MS, () => {
       if (!this.s || this.s.winner !== null || this.s.turn !== s.turn) return;
       this.clearAim();
       this.fire(aim.angle, aim.power);
@@ -308,7 +331,7 @@ class BattleScene extends Phaser.Scene {
     this.tweens.add({ targets: this.heroes[s.turn], duration: 220, yoyo: true, repeat: 1,
       y: this.heroes[s.turn].y - 5, ease: 'Quad.out' });
     this.setPose(s.turn, 'throw');
-    this.time.delayedCall(280, () => this.setPose(s.turn, 'idle'));
+    this.later(280, () => this.setPose(s.turn, 'idle'));
     UI.syncWeapon();
     UI.setPhase('fly');
     return proj;
@@ -396,7 +419,7 @@ class BattleScene extends Phaser.Scene {
       return;
     } else if (t === 'out') {
       UI.setPhase('impact');
-      return this.time.delayedCall(DATA.TURN.IMPACT_HOLD * 0.6, () => this.nextTurn());
+      return this.later(DATA.TURN.IMPACT_HOLD * 0.6, () => this.nextTurn());
     } else {
       SFX.play(t === 'direct' ? 'crack' : 'thud');
       this.sparks.setParticleTint(DATA.COLORS.dTop);
@@ -414,7 +437,7 @@ class BattleScene extends Phaser.Scene {
       this.floatText(tp.x, tp.y - 118 - Math.random() * 14, `-${h.dmg}`, h.kind === 'direct' ? '#FFD9A0' : '#E0863C');
       this.hitBurst(tp.x, tp.y - 60, h.kind === 'direct' ? 0xFFD9A0 : 0xE0863C, h.kind === 'direct' ? 14 : 8);
       this.setPose(h.who, 'hit');
-      this.time.delayedCall(320, () => this.setPose(h.who, 'idle'));
+      this.later(320, () => this.setPose(h.who, 'idle'));
     }
     if (out.hits.some((h) => h.who === s.turn)) SFX.play('hurt', 300);
     UI.syncHp();
@@ -422,8 +445,8 @@ class BattleScene extends Phaser.Scene {
     UI.setPhase('impact');
 
     const dead = s.players.findIndex((p) => p.hp <= 0);
-    if (dead >= 0) { this.time.delayedCall(620, () => this.endGame(1 - dead)); return; }
-    this.time.delayedCall(DATA.TURN.IMPACT_HOLD, () => this.nextTurn());
+    if (dead >= 0) { this.later(620, () => this.endGame(1 - dead)); return; }
+    this.later(DATA.TURN.IMPACT_HOLD, () => this.nextTurn());
   }
 
   addDecal(wp, x, y, type) {
@@ -529,7 +552,7 @@ class BattleScene extends Phaser.Scene {
     this.clearAim();
     this.cameras.main.pan(s.players[winner].x, s.players[winner].y - 40, 500, 'Sine.easeInOut');
     SFX.play(winner === 0 || s.mode === 'duo' ? 'win' : 'lose');
-    this.time.delayedCall(560, () => UI.showOver(winner));
+    this.later(560, () => UI.showOver(winner));
   }
 
   // ---------------- 回合计时 ----------------

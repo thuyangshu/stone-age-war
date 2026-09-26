@@ -381,7 +381,8 @@ console.log('\n══ G. N5 更宽种子域的 fuzz（开发方只跑种子 1–
       continue;
     }
     for (const p of m.players) {
-      if (!Number.isFinite(p.hp) || p.hp < 0 || p.hp > D.HP) bad++;
+      // 上界是各人自己的 hpMax，不是全局 D.HP：后手有贴目（KOMI），拿 100 当尺子会误报
+      if (!Number.isFinite(p.hp) || p.hp < 0 || p.hp > (p.hpMax || D.HP)) bad++;
       if (!Number.isFinite(p.x) || !Number.isFinite(p.y)) bad++;
     }
   }
@@ -396,16 +397,17 @@ console.log('\n══ H. 回归：整局内不变量（血量单调不增、弹�
   for (let s = 1; s <= 120; s++) {
     const m = L.simulateMatch(s * 977 + 3, 'medium', 'hard');
     if (!m.ok) continue;
-    const hp = [D.HP, D.HP];
     for (const e of m.log) {
       if (e.me === undefined) continue;
       if (e.turn % 2 !== e.me) turnBad++;
       if (e.burn && e.burn < 0) burnNeg++;
     }
-    for (const p of m.players) if (p.hp > hp[0]) hpUp++;
+    // 血量单调不增：基准是**各人自己的开局血**（后手有贴目，不能拿同一把尺子量）
+    m.players.forEach((p, i) => { if (p.hp > D.HP + (i === 1 ? D.KOMI : 0)) hpUp++; });
   }
   ck(turnBad === 0, 'H1 出手方与回合号奇偶一致', `不符 ${turnBad}`);
   ck(burnNeg === 0, 'H2 燃烧伤害非负', `负值 ${burnNeg}`);
+  ck(hpUp === 0, 'H2b 血量单调不增（各人按自己的开局血算，含贴目）', `回升 ${hpUp} 次`);
   // 弹药守恒：无限武器不会被打成 0
   const players = [P(300, 700), P(1200, 700)];
   for (const p of players) for (const wp of D.WEAPONS) p.ammo[wp.id] = wp.ammo > 0 ? wp.ammo : Infinity;

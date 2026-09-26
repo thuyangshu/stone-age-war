@@ -47,6 +47,11 @@ window.addEventListener('load', () => {
         spawns: s.world.spawns.map((q) => ({ x: q.x, y: q.y })),
         ponds: s.world.ponds.length, bushes: s.world.bushes.length,
         fps: Math.round(game.loop.actualFps),
+        // Phaser 的帧时间戳（毫秒，rAF 给的时间，等价于墙钟）。核对过 vendor 源码：
+        // Phaser.TimeStep 里是 `this.time = t`，t 来自 rAF，不是积累的 delta。
+        // 所以它只回答"页面还在不在渲染"，**不能**当游戏进度用——CPU 被压满时它照走。
+        // 冒烟 S4 的进度判据用 phase/turn/shots 那几个语义量，这个只用于失败时打线索
+        clock: Math.round(game.loop.time),
       };
     },
     start(mode = 'solo', level = 'medium', seed) {

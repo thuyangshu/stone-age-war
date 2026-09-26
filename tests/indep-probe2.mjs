@@ -135,7 +135,11 @@ async function main() {
     await sleep(900);
     const end = await ev(SNAP);
     console.log(`  +1.7s ：${JSON.stringify(end)}`);
-    console.log(`  ${end.winner === null && !end.over && end.hp[0] === 100 && end.hp[1] === 100 ? '✅ 新一局干净' : '★ 新一局被上一局的结算回调污染'}`);
+    // 满血值从页面读，不写死 100：后手有贴目（KOMI），双方满血不再相等
+    const full = await ev('[DATA.HP, DATA.HP + DATA.KOMI].join("/")');
+    console.log(`  ${end.winner === null && !end.over && end.hp.join('/') === full
+      ? `✅ 新一局干净（满血 ${full}）`
+      : `★ 新一局被上一局的结算回调污染（hp=${end.hp.join('/')} 期望 ${full}）`}`);
   }
 
   // ── P3 拖拽中松手落在按钮上 ──

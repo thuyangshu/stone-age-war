@@ -2,7 +2,7 @@
 // 用法：node build.mjs  → dist/石器大战.html 与内容相同的 dist/stone-fight.html
 //（英文名副本：部分安卓文件管理器/聊天软件转存中文文件名会乱码）
 // 只读 index.html 与源码，不修改任何源文件；产物可随时重新生成
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -53,6 +53,30 @@ const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
 html = html.replace('<title>',
   `<!-- 石器大战 单文件版 · 打包于 ${stamp} · 由 build.mjs 从源码生成，请勿手改 -->\n`
   + `<!--\n${licenses}\n-->\n<title>`);
+
+// 交付物改动铁律：dist 是生成物，但它是"可能被人打开过、编辑过"的成品，
+// 而 smoke.sh 第 6 步会在每次跑闸门时就地重建它——工作区有改动时，这一步会顺手
+// 冲掉任何手工改动（审计第 5 轮指出）。生成前按铁律那条"比对成品与生成脚本的 mtime"查：
+//   放行：① 产物不存在 ② 产物和刚重建的结果只差打包时间戳（等于没改，写了也是白写）
+//         ③ 产物比某个源文件旧（源码变了，这就是一次正常重建）
+//   拦下：产物比**所有**源文件都新，内容却和重建结果对不上——源码没动、产物变了，
+//         只可能是有人手工改过。这时拒绝覆盖，让人先备份。
+const stampRe = /打包于 [\d-]+ [\d:]+/;
+const strip = (t) => t.replace(stampRe, '打包于 —');
+const srcMtime = Math.max(...used.map((u) => statSync(join(ROOT, u)).mtimeMs));
+const handEdited = OUTS.filter((out) => {
+  let prev, mt;
+  try { prev = readFileSync(out, 'utf8'); mt = statSync(out).mtimeMs; } catch { return false; }
+  if (strip(prev) === strip(html)) return false;   // 内容一致，只是时间戳不同
+  return mt > srcMtime;                            // 比所有源文件都新，却对不上 → 手工改过
+});
+if (handEdited.length && !process.env.FORCE_BUNDLE) {
+  console.error('❌ 拒绝覆盖 dist：产物比所有源文件都新，内容却和源码重建的结果对不上——');
+  console.error('   源码没动而产物变了，只可能是有人手工改过它：');
+  for (const s of handEdited) console.error(`   ${s}`);
+  console.error('   先备份（cp 到 _备份-日期-HHMM/）再跑；确认要覆盖就加 FORCE_BUNDLE=1。');
+  process.exit(2);
+}
 
 mkdirSync(dirname(OUTS[0]), { recursive: true });
 for (const out of OUTS) writeFileSync(out, html);

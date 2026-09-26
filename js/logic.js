@@ -552,9 +552,12 @@ const LOGIC = ((DATA, WORLD) => {
 
   // ---------- 整局推演 ----------
   // 纯逻辑跑完一整局（bot-playtest 难度回归 与 fuzz 测试共用，不涉及任何渲染）
+  // i 就是回合顺序（0 先手 / 1 后手），贴目按它发——不按"人/AI"发，
+  // 这样人机、双人、AI 对战三种走法用的是同一条规则
   function newPlayer(spawn, i) {
     const ammo = newAmmo();
-    return { x: spawn.x, y: spawn.y, hp: DATA.HP, burn: null, ammo, shots: 0, idx: i };
+    const hpMax = DATA.HP + (i === 1 ? DATA.KOMI : 0);
+    return { x: spawn.x, y: spawn.y, hp: hpMax, hpMax, burn: null, ammo, shots: 0, idx: i };
   }
 
   // data.js 里 ammo:0 表示"无限"；这里换成 Infinity，让"还有弹药吗"统一成 >0 一个判断，
