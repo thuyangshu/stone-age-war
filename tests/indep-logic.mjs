@@ -5,6 +5,7 @@
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const D = require('../js/data.js');
+const SHOT_OFF = D.AI.FIRST_SHOT_OFFSET ?? D.AI.FIRST_MISS_MIN;
 const W = require('../js/world.js');
 const L = require('../js/logic.js');
 
@@ -199,7 +200,7 @@ console.log('\n══ E. F30 AI 首发放大 / 随轮次收敛 ══');
   ck(s40 > 0, 'E3 误差不会归零（MIN_ERR 生效，保住手感波动）', `h40=${s40.toFixed(4)}`);
 
   // F30 原文"第一发必偏"：实测首发直击率与"落点离靶心多远"
-  // 代码里 aiAim 对 hist=0 先把瞄点沿连线法向挪开 FIRST_MISS_MIN 像素（硬保证不直击）。
+  // 代码里 aiAim 对 hist=0 先把瞄点沿连线法向挪开，出口再拿真碰撞校验（硬保证不直击且落点偏出合格线）。
   // 挪开的是"瞄点"，可是选弧的代价函数里 direct（直击）权重 -1，远比 miss/100 大，
   // 于是只要有一条弧能穿过对手，它就会胜出并 break——偏移瞄点被整个绕过。
   let firstHit = 0, laterHit = 0, firstN = 0, laterN = 0;
@@ -228,12 +229,71 @@ console.log('\n══ E. F30 AI 首发放大 / 随轮次收敛 ══');
   const med = firstMiss[Math.floor(firstMiss.length / 2)];
   ck(true, 'E4 首发直击率实测（供判定"第一发必偏"是否字面成立）',
     `首发直击 ${firstHit}/${firstN} = ${(firstHit / firstN * 100).toFixed(1)}%，后续 ${(laterHit / laterN * 100).toFixed(1)}%`);
-  ck(med >= D.AI.FIRST_MISS_MIN * 0.8, 'E4b 首发落点被真的推离靶心（偏移瞄点没被解算绕过）',
+  ck(med >= SHOT_OFF * 0.8, 'E4b 首发落点被真的推离靶心（偏移瞄点没被解算绕过）',
     `首发落点距靶心中位 ${med.toFixed(1)}px，最小 ${firstMiss[0].toFixed(1)}px`
-    + `（偏移量 ${D.AI.FIRST_MISS_MIN}±20%，落点中位应≥${(D.AI.FIRST_MISS_MIN * 0.8).toFixed(0)}）`);
+    + `（合格线 ${SHOT_OFF}，落点中位应≥${(SHOT_OFF * 0.8).toFixed(0)}）`);
   if (firstHit / firstN > 0.05) {
     console.log(`   ⚠ F30 字面"第一发必偏"不成立：hard 档首发仍有 ${(firstHit / firstN * 100).toFixed(1)}% 直接命中，`
       + `首发落点距靶心最近的只有 ${firstMiss[0].toFixed(1)}px（直击判定半径约 33px）`);
+  }
+}
+
+console.log('\n══ E5. 三档误差表（data.js 重调后）的独立复核：难度单调 + 每档首发不直击 ══');
+{
+  // 用同一张图、同一组靶位，只换难度档，量注入误差的实际大小
+  const w = L.newBattle(11);
+  const me = { x: w.spawns[0].x, y: w.spawns[0].y };
+  const foe = { x: w.spawns[1].x, y: w.spawns[1].y };
+  const LV = ['easy', 'medium', 'hard'];
+  const spreadLv = (level, hist, n = 400) => {
+    const rng = W.mulberry32(2024);
+    let sq = 0;
+    const zero = () => 0.5;
+    for (let i = 0; i < n; i++) {
+      const a = L.aiAim(w, me, foe, D.WEAPONS[0], level, rng, hist);
+      const b = L.aiAim(w, me, foe, D.WEAPONS[0], level, zero, hist);
+      sq += (a.angle - b.angle) ** 2 + (a.power - b.power) ** 2;
+    }
+    return Math.sqrt(sq / n);
+  };
+  const s1 = {}, s3 = {};
+  for (const lv of LV) { s1[lv] = spreadLv(lv, 1); s3[lv] = spreadLv(lv, 3); }
+  ck(s1.easy > s1.medium * 1.5 && s1.medium > s1.hard * 1.5,
+    'E5-1 三档注入误差单调 easy ≫ medium ≫ hard（hist=1）',
+    LV.map((l) => `${l}=${s1[l].toFixed(4)}`).join(' > '));
+  ck(s3.easy > s3.medium * 1.5 && s3.medium > s3.hard * 1.5,
+    'E5-2 三档注入误差单调 easy ≫ medium ≫ hard（hist=3）',
+    LV.map((l) => `${l}=${s3[l].toFixed(4)}`).join(' > '));
+  ck(s1.easy > s3.easy && s1.medium > s3.medium && s1.hard > s3.hard,
+    'E5-3 三档各自都随轮次收敛（不是只有 hard 在收敛）',
+    LV.map((l) => `${l}: ${s1[l].toFixed(4)}→${s3[l].toFixed(4)}`).join(' ｜ '));
+  console.log(`   档位旋钮：${LV.map((l) => `${l}{angErr=${D.AI[l].angErr},powErr=${D.AI[l].powErr},`
+    + `missChance=${D.AI[l].missChance},greedy=${D.AI[l].greedy}}`).join(' ')}`);
+
+  // F30 的硬保证"对全新目标第一发必偏"是否对三档都成立
+  for (const lv of LV) {
+    let hit = 0, n = 0;
+    const miss = [];
+    for (let s = 1; s <= 120; s++) {
+      const ww = L.newBattle(s);
+      const m = { x: ww.spawns[0].x, y: ww.spawns[0].y };
+      const f = { x: ww.spawns[1].x, y: ww.spawns[1].y };
+      const aim = L.aiAim(ww, m, f, D.WEAPONS[0], lv, W.mulberry32(s * 17 + 3), 0);
+      const proj = L.makeProjectile(D.WEAPONS[0], m.x, m.y - 34, aim.angle, aim.power);
+      proj.owner = 0;
+      const r = L.simulate(ww, proj, {}, {
+        players: [{ x: m.x, y: m.y, hp: 100 }, { x: f.x, y: f.y, hp: 100 }], maxT: 14,
+      });
+      const e = r.events[0];
+      n++;
+      if (e && e.type === 'direct') hit++;
+      if (e) miss.push(Math.hypot(e.x - f.x, e.y - (f.y - 30)));
+    }
+    miss.sort((a, b) => a - b);
+    const med = miss[Math.floor(miss.length / 2)];
+    ck(hit === 0 && med >= SHOT_OFF * 0.8,
+      `E5-4[${lv}] 对全新目标首发零直击，且落点被推离靶心（F30 硬保证）`,
+      `直击 ${hit}/${n}，落点距靶心中位 ${med.toFixed(1)}px（应 ≥${(SHOT_OFF * 0.8).toFixed(0)}）`);
   }
 }
 
