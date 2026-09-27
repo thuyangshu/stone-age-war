@@ -96,6 +96,18 @@ function check(name, ok, detail = '') {
 
 const st = () => evaluate('window.__debug.state()');
 const dom = () => evaluate('window.__debug.dom()');
+// 贴目（KOMI）自 2026-09-27 起是分档表 {easy,medium,hard}，满血值随场上的 mode/level 变，
+// 所以不能在开头读一次缓存起来用——换难度后它会停在旧值上，断言就成了自己跟自己比。
+// 这里按**跟游戏同一条规则**现算：LOGIC.komiFor(mode/level)。它只依赖 DATA.KOMI 表
+// 与场上的 mode/level，不依赖 newPlayer 的接线，所以仍能查出"接线漏了/发错人"。
+const komiNow = () => evaluate(`(() => {
+  const s = __debug.game.scene.getScene('battle').s;
+  return LOGIC.komiFor(s.mode === 'solo' ? s.level : null);
+})()`);
+const modeLevel = () => evaluate(`(() => {
+  const s = __debug.game.scene.getScene('battle').s;
+  return s.mode + (s.mode === 'solo' ? ' · ' + s.level : '');
+})()`);
 const click = async (id) => {
   const p = await evaluate(`(() => { const r = document.getElementById('${id}').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`);
   await send('Input.dispatchMouseEvent', { type: 'mousePressed', x: p.x, y: p.y, button: 'left', clickCount: 1 });
@@ -190,7 +202,8 @@ async function main() {
   DATA_WEAPON_COUNT = await evaluate('DATA.WEAPONS.length');
   DATA_CAM_MIN = await evaluate('DATA.CAM.minZoom');
   DATA_HP = await evaluate('DATA.HP');
-  DATA_KOMI = await evaluate('DATA.KOMI');   // 后手贴目，player 1 开局多这么多血
+  // 后手贴目（player 1 开局多这么多血）不在这里读缓存：出厂值是**分档表**，
+  // 满血随场上的 mode/level 变，各断言按需现算——见 komiNow()
   await evaluate(AIM_HIT);
   // 记下每次命中类型：失败时能一眼看出是打偏、撞灌木还是落水，不用回头猜
   await evaluate(`(() => { const sc=__debug.game.scene.getScene('battle'); window.__impacts=[];
@@ -217,17 +230,19 @@ async function main() {
   let s = await st();
   d = await dom();
   check('S2 开局：HUD/武器栏出现、8 个武器槽', d.hud && d.weapons && d.slots === DATA_WEAPON_COUNT, `slots=${d.slots}`);
-  // 满血的准确值从页面读，不写死 100：后手有贴目（DATA.KOMI），写死会让改数值时
+  // 满血的准确值从页面读，不写死 100：后手有贴目（DATA.KOMI 分档），写死会让改数值时
   // 这条断言悄悄变成"错的"却仍写着"满血"
+  let K = await komiNow();
   check('S2 双方满血、有站位',
-    s.hp[0] === DATA_HP && s.hp[1] === DATA_HP + DATA_KOMI && s.spawns.length === 2,
-    `hp=${s.hp.join('/')}（满血 ${DATA_HP}/${DATA_HP + DATA_KOMI}）`);
+    s.hp[0] === DATA_HP && s.hp[1] === DATA_HP + K && s.spawns.length === 2,
+    `hp=${s.hp.join('/')}（满血 ${DATA_HP}/${DATA_HP + K}，本局 ${await modeLevel()}）`);
   // 上面那条两侧都从页面读：把 KOMI 改成 0 它照样绿（测试方 T-6 建议 6）。那条量的是
   // "页面内部自洽"，这条量的是"发出去的确实是这几个数"。数值本身由镜像线
-  // （bot-playtest）钉平衡，这里钉出厂值——改了 data.js 的 HP/KOMI 就得同步改这一行
-  check('S2 贴目出厂值就是 100 / 112',
+  // （bot-playtest）钉平衡，这里钉出厂值——改了 data.js 的 HP/KOMI 就得同步改这一行。
+  // S2 走的是「人机 · medium」，medium 档贴目 12 → 100/112；分档表一动这条必须一起动
+  check('S2 贴目出厂值就是 100 / 112（人机 medium）',
     s.hp[0] === 100 && s.hp[1] === 112,
-    `hp=${s.hp.join('/')}（出厂值 100/112；data.js 的 HP 与 KOMI 一改，这条必须一起改）`);
+    `hp=${s.hp.join('/')}（出厂值 100/112；data.js 的 HP 与 KOMI 表一改，这条必须一起改）`);
 
   // S2b 地形要盖满视野。宽屏下适配缩放被高度卡住，视野比世界那 1600px 宽，
   // 地形只画世界尺寸的话左右会露出两条直角切口——地形看着像浮在背景上的方块
@@ -426,7 +441,8 @@ async function main() {
   DATA_WEAPON_COUNT = await evaluate('DATA.WEAPONS.length');
   DATA_CAM_MIN = await evaluate('DATA.CAM.minZoom');
   DATA_HP = await evaluate('DATA.HP');
-  DATA_KOMI = await evaluate('DATA.KOMI');   // 后手贴目，player 1 开局多这么多血
+  // 后手贴目（player 1 开局多这么多血）不在这里读缓存：出厂值是**分档表**，
+  // 满血随场上的 mode/level 变，各断言按需现算——见 komiNow()
   await evaluate(AIM_HIT);
   await tap('btn-duo');                       // 触屏点按钮开局（重载后还没对局，state() 是 null）
   await waitFor('window.__debug.ready() && __debug.state().mode === "duo"', 5000);
@@ -554,9 +570,10 @@ async function main() {
   await tap('btn-pause'); await sleep(200);
   await tap('btn-restart'); await sleep(900);
   s = await st();
+  K = await komiNow();
   check('S12 重开是一局新的满血对局',
-    s && s.hp[0] === DATA_HP && s.hp[1] === DATA_HP + DATA_KOMI && s.winner === null && s.shots[0] < beforeRestart,
-    `hp=${s && s.hp.join('/')}（满血 ${DATA_HP}/${DATA_HP + DATA_KOMI}） shots=${s && s.shots[0]}`);
+    s && s.hp[0] === DATA_HP && s.hp[1] === DATA_HP + K && s.winner === null && s.shots[0] < beforeRestart,
+    `hp=${s && s.hp.join('/')}（满血 ${DATA_HP}/${DATA_HP + K}） shots=${s && s.shots[0]}`);
 
   // S12b 重开竞态回归（测试方 T-4/T-5 报、审计 A-9 严重#1 独立复现，此前冒烟测不到）
   // 根因：场景时钟上的 delayedCall 不随重开作废，上一局的 nextTurn / endGame 会在新局里醒来。
@@ -651,7 +668,7 @@ async function main() {
     const c = r.last;
     const ok = !r.sawNull && !r.sawOver && r.maxTurn === 0 && c && c.winner === null
       && c.shots[0] === 0 && c.shots[1] === 0
-      && c.hp[0] === DATA_HP && c.hp[1] === DATA_HP + DATA_KOMI;
+      && c.hp[0] === DATA_HP && c.hp[1] === DATA_HP + K;
     check(`S12b ${tag}：新局干净`, ok,
       `观察 5s 内 maxTurn=${r.maxTurn} 结算页=${r.sawOver} 末态 phase=${c && c.phase} `
       + `hp=${c && c.hp.join('/')} shots=${c && c.shots.join('/')} winner=${c && c.winner}`
@@ -674,7 +691,7 @@ async function main() {
 }
 
 // 这两个值在 main() 里从页面读（见读 DATA.WEAPONS.length 处），这里只开声明
-let DATA_WEAPON_COUNT, DATA_CAM_MIN, DATA_HP, DATA_KOMI;
+let DATA_WEAPON_COUNT, DATA_CAM_MIN, DATA_HP;
 
 let code = 0;
 try {

@@ -22,8 +22,14 @@ class BattleScene extends Phaser.Scene {
     this.s = {
       mode, level,
       world: w,
-      // 玩家结构体与 bot 推演共用同一份构造函数，弹药"0 即无限"的约定只有一处
-      players: w.spawns.map((sp, i) => LOGIC.newPlayer(sp, i)),
+      // 玩家结构体与 bot 推演共用同一份构造函数，弹药"0 即无限"的约定只有一处。
+      // 贴目按难度分档：人机取所选难度那一档，本地双人没有档位、走 komiFor 的
+      // medium 锚定值（传 null，让 komiFor 落默认）。两边发同一个值，贴目只跟
+      // 回合顺序挂钩，与"谁是 AI"无关。
+      players: (() => {
+        const k = LOGIC.komiFor(mode === 'solo' ? level : null);
+        return w.spawns.map((sp, i) => LOGIC.newPlayer(sp, i, k));
+      })(),
       turn: 0, phase: 'idle', weapon: null, proj: null, winner: null,
       aim: null, dragging: false, dragFrom: null, dragPull: 0,
       thinkMs: DATA.TURN.AI_THINK[level] || 600,

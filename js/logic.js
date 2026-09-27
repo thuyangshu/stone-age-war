@@ -25,6 +25,34 @@ const LOGIC = ((DATA, WORLD) => {
     return t1 >= 0 && t1 <= 1 ? t1 : -1;
   }
 
+  // 线段与竖直胶囊的首次相交参数 t∈[0,1]，无交返回 -1。
+  // 胶囊 = 从 (cx, y-BOT) 到 (cx, y-TOP) 的竖直线段，向外扩 R（玩家身体，见 data.js HIT）。
+  // 形状用等距圆串逼近：每条圆各自给出精确的进入参数，取最小即"最先进入身体"的时刻，
+  // 与地形比先后的语义一分不改。圆间距按半径选，让两圆之间的凹陷不超过 SCALLOP——
+  // 0.5px 的扇贝落在 22px 半径的身体上，比任何弹丸半径小一个数量级。
+  // 为什么不写解析胶囊：圆串直接复用了上面这条已经测过的 segCircle，没有新的几何代码
+  // 可以写错；解析法（线段—线段最近距离）返回的是最近点而不是进入点，与 tTerrain
+  // 比先后时语义会变。
+  const CAPSULE_SCALLOP = 0.5;
+  function segCapsule(x0, y0, x1, y1, cx, cy, r, bot, top) {
+    const yb = cy - bot, yt = cy - top;                 // 下端 y 更大
+    const span = yb - yt;
+    if (span <= 0) return segCircle(x0, y0, x1, y1, cx, cy, r);
+    const step = 2 * Math.sqrt(Math.max(0.01, 2 * r * CAPSULE_SCALLOP - CAPSULE_SCALLOP * CAPSULE_SCALLOP));
+    const n = Math.max(2, Math.ceil(span / step) + 1);
+    let best = -1;
+    for (let i = 0; i < n; i++) {
+      const yy = yt + (span * i) / (n - 1);
+      const t = segCircle(x0, y0, x1, y1, cx, yy, r);
+      if (t >= 0 && (best < 0 || t < best)) best = t;
+    }
+    return best;
+  }
+
+  // 身体上"算哪儿"用的中心（AI 瞄点、够不够得着、溅射衰减的基准）。
+  // 与受击体同源，免得又出现两处各写一个数、改了一处漏一处
+  const bodyMid = (p) => p.y - (DATA.HIT.BOT + DATA.HIT.TOP) / 2;
+
   // ---------- 弹道解析解 ----------
   // 已知初速 v、重力 g、水平差 dx、垂直差 dy（y 向下为正），反解出手仰角（弧度，世界坐标）
   // 返回 { low, high }（平射解 / 高抛解），够不着返回 null
@@ -176,7 +204,7 @@ const LOGIC = ((DATA, WORLD) => {
         if (i === p.owner) continue;
         const q = ctx.players[i];
         if (q.hp <= 0) continue;
-        const t = segCircle(ox, oy, nx, ny, q.x, q.y - 30, DATA.HIT_R + p.r);
+        const t = segCapsule(ox, oy, nx, ny, q.x, q.y, DATA.HIT.R + p.r, DATA.HIT.BOT, DATA.HIT.TOP);
         if (t >= 0 && t < tHit) { tHit = t; hitWho = i; }
       }
     }
@@ -255,7 +283,10 @@ const LOGIC = ((DATA, WORLD) => {
   // 校验用粗步长（1/60）跑，快 4 倍；只判断"打不打得到"，不要求像素级精确
   function reachable(w, a, b, weapon) {
     const g = P.G * (weapon.gMul || 1);
-    const sx = a.x, sy = a.y - 34, tx = b.x, ty = b.y - 30;
+    // 锚在身体**下端**而不是中心：这条量的是"有一发能落到对手脚边"，落点是地面点，
+    // 从脚底量才对得上。锚到中心（+38px）会把"落到脚边"判成够不着，
+    // 一批本来能打的图会被无谓重掷——实测 200 张图里 9 张因此误判
+    const sx = a.x, sy = a.y - 34, tx = b.x, ty = b.y - DATA.HIT.BOT;
     const dx = tx - sx, dy = ty - sy;
     const left = dx < 0;
     const toWorld = (e) => (left ? Math.PI - e : e);
@@ -317,7 +348,9 @@ const LOGIC = ((DATA, WORLD) => {
       for (let i = 0; i < players.length; i++) {
         const q = players[i];
         if (q.hp <= 0) continue;
-        const d = Math.hypot(q.x - impact.x, (q.y - 30) - impact.y);
+        // 溅射基准点取身体**下端**而不是中心：落地溅射是"炸在脚边"，从脚底量最贴物理。
+        // 之前这里写死 -30，与受击体各说各话；现在跟 HIT 同源
+        const d = Math.hypot(q.x - impact.x, (q.y - DATA.HIT.BOT) - impact.y);
         const dm = splashAt(d, weapon.splash);
         if (dm > 0) hits.push({ who: i, dmg: dm, kind: 'splash' });
         if (weapon.burn && d <= (weapon.splash ? weapon.splash.r : 40)) burn = { who: i, ...weapon.burn };
@@ -414,7 +447,7 @@ const LOGIC = ((DATA, WORLD) => {
     if (r.impact.type === 'direct') return false;
     // 按**落点**判而不是按瞄点：瞄点挪开了 115~187px，但后面的误差注入还能把它
     // 拽回来一截，看落点才知道这发弹最后偏到哪儿去了
-    const d = Math.hypot(r.impact.x - target.x, r.impact.y - (target.y - 30));
+    const d = Math.hypot(r.impact.x - target.x, r.impact.y - bodyMid(target));
     return d >= DATA.AI.FIRST_SHOT_OFFSET;
   }
 
@@ -443,7 +476,7 @@ const LOGIC = ((DATA, WORLD) => {
     const cfg = DATA.AI[level];
     const g = P.G * (weapon.gMul || 1);
     const sx = me.x, sy = me.y - 34;              // 出手点
-    let tx = target.x, ty = target.y - 30;        // 瞄胸口
+    let tx = target.x, ty = bodyMid(target);      // 瞄身体中心（受击胶囊的中点，见 data.js HIT）
     // 全新目标的第一发：先把瞄点沿垂直方向挪开，给下面的硬校验一个起手位。
     // 光靠放大误差做不到"必偏"——误差乘 2.6 倍后 hard 档首发直击率仍有 45%，
     // 观察期形同虚设（见 docs/需求与验收.md F30）。挪开量带随机，
@@ -502,9 +535,9 @@ const LOGIC = ((DATA, WORLD) => {
     // 够不着：没有任何一条弧线能落到瞄点附近。这个判定必须做出来，否则 aiAim 会
     // 安安静静地返回一发"满力也只飞到半路"的弹，调用方看不出这是够不着，
     // 也就永远想不到换武器（F31）。判定阈值见 data.js 的 REACH_TOL
-    // 直击要单独放行：命中点落在对手碰撞圈边缘时，miss 天然等于
-    // HIT_R + 弹丸半径（巨石是 26+16=42px），拿 miss 直接比阈值会把
-    // "打得准"判成"够不着"——巨石曾因此 200/200 全判够不着
+    // 直击要单独放行：命中点落在对手受击体边缘时，miss 天然等于
+    // 身体半径 + 弹丸半径（巨石是 22+16=38px 再叠上胶囊半高），拿 miss 直接比阈值
+    // 会把"打得准"判成"够不着"——巨石曾因此 200/200 全判够不着
     if (!best || (!best.direct && best.near > DATA.AI.REACH_TOL)) {
       let hAngle = toWorld(45 * DEG), hPower = 1;
       // 够不着 ≠ 打不到：45° 满力这一发从来没验过直击，实测真能打中
@@ -551,12 +584,28 @@ const LOGIC = ((DATA, WORLD) => {
   }
 
   // ---------- 整局推演 ----------
+  // 贴目取值：一局取双方里**较高**的那一档（同档就是它自己）。DATA.KOMI 是
+  // {easy,medium,hard} 的表；本地双人双方都是人、没有档位，取锚定值 medium。
+  // 传进来的档位认不出（undefined/拼错）时同样落到 medium——宁可发锚定值，
+  // 也不要发 undefined 把 hp 变成 NaN。
+  // 覆写成标量（DATA.KOMI = 8）时按标量发：tools/komi-curve.cjs 扫曲线就靠这条。
+  const RANK = { easy: 0, medium: 1, hard: 2 };
+  function komiFor(a, b) {
+    const K = DATA.KOMI;
+    if (typeof K === 'number') return K;
+    let best = null;
+    for (const lv of [a, b]) if (lv in RANK && (best === null || RANK[lv] > RANK[best])) best = lv;
+    return K[best || 'medium'];
+  }
+
   // 纯逻辑跑完一整局（bot-playtest 难度回归 与 fuzz 测试共用，不涉及任何渲染）
   // i 就是回合顺序（0 先手 / 1 后手），贴目按它发——不按"人/AI"发，
-  // 这样人机、双人、AI 对战三种走法用的是同一条规则
-  function newPlayer(spawn, i) {
+  // 这样人机、双人、AI 对战三种走法用的是同一条规则。
+  // komi 省略时按 komiFor() 的默认（medium 锚定值）；game.js 传的是所选难度那一档。
+  function newPlayer(spawn, i, komi) {
     const ammo = newAmmo();
-    const hpMax = DATA.HP + (i === 1 ? DATA.KOMI : 0);
+    const k = komi === undefined ? komiFor() : komi;
+    const hpMax = DATA.HP + (i === 1 ? k : 0);
     return { x: spawn.x, y: spawn.y, hp: hpMax, hpMax, burn: null, ammo, shots: 0, idx: i };
   }
 
@@ -574,7 +623,8 @@ const LOGIC = ((DATA, WORLD) => {
     const spawns = w.spawns;
     if (!spawns || spawns.length < 2) return { ok: false, reason: 'no-spawn', seed };
     const rng = WORLD.mulberry32((seed ^ 0x9E3779B9) >>> 0);
-    const players = [newPlayer(spawns[0], 0), newPlayer(spawns[1], 1)];
+    const komi = komiFor(lvA, lvB);
+    const players = [newPlayer(spawns[0], 0, komi), newPlayer(spawns[1], 1, komi)];
     const levels = [lvA, lvB];
     const log = [];
 
@@ -604,9 +654,9 @@ const LOGIC = ((DATA, WORLD) => {
   }
 
   return {
-    DEG, clamp, segCircle, solveShot, solvePower, angleRange, makeProjectile, stepProjectile, simulate,
+    DEG, clamp, segCircle, segCapsule, bodyMid, solveShot, solvePower, angleRange, makeProjectile, stepProjectile, simulate,
     clampFrame, pullToAim, timeoutAim,
-    simulateMatch, newPlayer, newAmmo,
+    simulateMatch, newPlayer, newAmmo, komiFor,
     reachable, newBattle, splashAt, settleImpact, tickBurn, aiPickWeapon, aiAim, aiChoose,
   };
 })(

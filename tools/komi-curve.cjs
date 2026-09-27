@@ -1,8 +1,11 @@
 // 贴目（KOMI）曲线：量"回合顺序"值多少血。
 // 镜像对局里双方 AI 相同、目标相同，唯一的不对称就是回合顺序，所以镜像局的先手胜率
 // 就是回合顺序的价值。跑法：同一批种子、同一套判定，**只覆写 DATA.KOMI**——
-// KOMI 是在 LOGIC.newPlayer 里现读的（`DATA.HP + (i === 1 ? DATA.KOMI : 0)`），
+// 出厂值是一张分档表 {easy,medium,hard}，本脚本把它**整体覆写成一个标量**扫曲线；
+// LOGIC.komiFor 认到标量就按标量发（见 js/logic.js 里那条注释），
 // 覆写即生效，logic.js 一个字都不用动，也不用改 data.js 的出厂值。
+// 换句话说：这里的 k 是"不分档、三档统一贴 k 点"的假想世界，曲线正是用来证明
+// 那样选不出同时过线的点。
 //
 // 用法：node tools/komi-curve.cjs [N] [档次,逗号分隔] [贴目,逗号分隔]
 //   node tools/komi-curve.cjs 2400                    # 默认 medium,hard × 0,11,12,12.5,13

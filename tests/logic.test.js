@@ -313,11 +313,16 @@ test('Fuzz：500 局全自动对局，不出错、不出现 NaN、200 回合内�
       else if (m.reason === 'no-spawn') spawnFail++;
       continue;
     }
+    // 期望的贴目独立算一遍——不用 L.komiFor，否则成了拿它自己验它自己。
+    // 规则：取双方里较高的一档（同档就是它自己）
+    const RANK = { easy: 0, medium: 1, hard: 2 };
+    const komi = D.KOMI[RANK[a] > RANK[b] ? a : b];
     for (const p of m.players) {
       assert.ok(Number.isFinite(p.hp), `HP 出现 NaN（种子 ${i + 1}）`);
-      // 上界按各人自己的满血算：后手有贴目（DATA.KOMI），拿全局 D.HP 当上界会误报
+      // 上界按各人自己的满血算：后手有贴目（DATA.KOMI 分档），拿全局 D.HP 当上界会误报
       assert.ok(p.hp >= 0 && p.hp <= p.hpMax, `HP 越界 ${p.hp}/${p.hpMax}（种子 ${i + 1}）`);
-      assert.ok(p.hpMax === D.HP + (p.idx === 1 ? D.KOMI : 0), `满血值不对（种子 ${i + 1}）`);
+      assert.ok(p.hpMax === D.HP + (p.idx === 1 ? komi : 0),
+        `满血值不对：${p.hpMax}（${a} vs ${b} 应贴 ${komi}，种子 ${i + 1}）`);
       assert.ok(Number.isFinite(p.x) && Number.isFinite(p.y), `坐标出现 NaN（种子 ${i + 1}）`);
     }
     assert.ok([0, 1].includes(m.winner));
@@ -325,6 +330,47 @@ test('Fuzz：500 局全自动对局，不出错、不出现 NaN、200 回合内�
   assert.equal(nan, 0, `${nan} 局出现 NaN`);
   assert.equal(spawnFail, 0, `${spawnFail} 局没有站位`);
   assert.ok(stuck <= 5, `${stuck}/500 局打满 200 回合未分胜负`);
+});
+
+test('贴目分档：一局取双方较高档；认不出的档落锚定值；标量覆写仍生效', () => {
+  // 规则来源：2026-09-27 作者裁决。判定体从圆换成胶囊后双方命中率一起抬高，
+  // 三条验收线各自要求不同的贴目（easy≈0 / medium 12 / hard 6），一个标量无解。
+  assert.deepStrictEqual(D.KOMI, { easy: 0, medium: 12, hard: 6 },
+    '出厂贴目表被动过——它同时是三条验收线的支点（见 data.js KOMI 注释与 docs/需求与验收.md §五）');
+  // 取双方较高档，且与参数顺序无关（先手/后手换位不该改结论）
+  assert.equal(L.komiFor('easy', 'medium'), 12);
+  assert.equal(L.komiFor('medium', 'easy'), 12);
+  assert.equal(L.komiFor('hard', 'medium'), 6);
+  assert.equal(L.komiFor('medium', 'hard'), 6);
+  assert.equal(L.komiFor('hard', 'hard'), 6);
+  assert.equal(L.komiFor('easy', 'easy'), 0);
+  // 认不出的档位落 medium 锚定值：本地双人双方都是人、没有档位，走的正是这条；
+  // 拼错档名时也宁可发锚定值，不要发 undefined 把 hp 弄成 NaN
+  assert.equal(L.komiFor(), 12);
+  assert.equal(L.komiFor(null, null), 12);
+  assert.equal(L.komiFor('nonsense', 'easy'), 0, '认得出的一方仍该生效');
+  assert.equal(L.komiFor('hard', undefined), 6);
+  // 标量覆写：tools/komi-curve.cjs 扫曲线靠这条。删了它那条工具会静默退化成"三档同值"
+  const base = D.KOMI;
+  try {
+    D.KOMI = 7;
+    assert.equal(L.komiFor('easy', 'medium'), 7);
+    assert.equal(L.komiFor('hard', 'hard'), 7);
+    const sp = L.newBattle(1234).spawns;
+    assert.equal(L.newPlayer(sp[0], 0).hpMax, D.HP);
+    assert.equal(L.newPlayer(sp[1], 1).hpMax, D.HP + 7);
+  } finally { D.KOMI = base; }
+});
+
+test('贴目只发给后手，且只跟档位走——不按"谁是 AI"发', () => {
+  // 人机、双人、AI 对战三种走法共用 newPlayer，这条钉住"贴目落在回合顺序上"这个不变量
+  for (const [a, b, k] of [['medium', 'easy', 12], ['hard', 'medium', 6], ['easy', 'easy', 0]]) {
+    const m = L.simulateMatch(4242, a, b);
+    assert.ok(m.ok, `${a} vs ${b} 这局没跑起来`);
+    assert.equal(m.players[0].hpMax, D.HP, `${a} vs ${b} 先手满血`);
+    assert.equal(m.players[1].hpMax, D.HP + k, `${a} vs ${b} 后手满血应贴 ${k}`);
+    // 只查 hpMax：simulateMatch 返回的是**终局**状态，后手可能已经被打到 0 血
+  }
 });
 
 test('回归：镜像对局不该先手必胜（同档 AI 互打先手胜率须接近 50%）', () => {
@@ -472,7 +518,7 @@ test('F30：AI 对全新目标的第一发不直击，且落点偏出 FIRST_SHOT
       n++;
       if (!impact) continue;                     // 没落点（飞出世界）谈不上打中
       if (impact.type === 'direct') direct++;
-      const d = Math.hypot(impact.x - foe.x, impact.y - (foe.y - 30));
+      const d = Math.hypot(impact.x - foe.x, impact.y - L.bodyMid(foe));
       assert.ok(impact.type !== 'direct' && d >= FLOOR,
         `${lv} seed=${s} 首发 wp=${act.wp.id} 类型=${impact.type} 偏移=${d.toFixed(1)}px，破硬保证线 ${FLOOR}px`);
       worst = Math.min(worst, d);
@@ -512,7 +558,7 @@ test('F30 覆盖面：八件武器各自动用硬保证时都不破线', () => {
         if (!r.impact) continue;
         n++;
         if (r.impact.type === 'direct') direct++;
-        nearest = Math.min(nearest, Math.hypot(r.impact.x - foe.x, r.impact.y - (foe.y - 30)));
+        nearest = Math.min(nearest, Math.hypot(r.impact.x - foe.x, r.impact.y - L.bodyMid(foe)));
       }
       assert.ok(n > 0, `${lv}/${wp.id} 一发都没验到，这件的覆盖是空的`);
       assert.equal(direct, 0, `${lv}/${wp.id} 首发直击 ${direct} 次（hopeless ${hopeless} 发）`);
