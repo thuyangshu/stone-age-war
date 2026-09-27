@@ -492,6 +492,8 @@ async function main() {
     return { on: p.x>=v.x && p.x<=v.right && p.y>=v.y && p.y<=v.bottom,
              px:Math.round(p.x), py:Math.round(p.y),
              vx:Math.round(v.x), vr:Math.round(v.right), vy:Math.round(v.y), vb:Math.round(v.bottom),
+             // 视野中心的 x 与半宽：判"镜头是否真的对着射手"要用它，见下方 S-5 的说明
+             cx:Math.round((v.x + v.right) / 2), halfW:(v.right - v.x) / 2,
              // 排障用：镜头自己怎么想。失败时只报四个边界，看不出"是没挪、还是挪了又回来"
              sx:Math.round(cam.scrollX), phase:s.phase, running:!!pe.isRunning,
              fps:Math.round(__debug.game.loop.actualFps), scenePaused:!sc.scene.isActive() }; })()`);
@@ -499,8 +501,17 @@ async function main() {
   // 射手附近）也会读到 on:true——那是蒙对的，不是镜头真的对上了
   const settled = await waitCamIdle();
   const focus = await focusOf();
-  check('S-5 首回合镜头把射手带进手机屏幕', settled && focus.on,
-    `${JSON.stringify(focus)} 补间落定=${settled}`);
+  // 光判 on:true 是**空断言**（独立测试员的变异测试 m1 打出来的：把首回合那句
+  // cam.pan(...) 整句注掉，这条照样绿）。原因是镜头不动时停在 scrollX=0，
+  // 视野覆盖世界 x[0,709]，而射手在世界 x=211——"在屏幕里"是蒙对的，
+  // 镜头其实根本没对着他。pan 真正决定的是**视野中心**，所以就判中心：
+  // 带 pan 时中心 210.5 vs 射手 211（差 0.5）；注掉 pan 后中心 354.5（差 143.5）。
+  // 容差取视野半宽的 1/4（此处 88.6），两边都拉得开，且留了镜头贴世界边被夹住的余地。
+  const focused = Math.abs(focus.px - focus.cx) <= 0.25 * focus.halfW;
+  // 名字沿用旧串（独立测试员的 indep-mutation.mjs 用它做 includes 匹配；
+  // 改名会让那条变异测试报"套件没跑到"而不是真的去判红），要说明的都在括号里
+  check('S-5 首回合镜头把射手带进手机屏幕（判视野中心，不只是"恰好在屏幕里"）', settled && focus.on && focused,
+    `${JSON.stringify(focus)} 补间落定=${settled} 中心距=${Math.abs(focus.px - focus.cx)}px（容差 ${(0.25 * focus.halfW).toFixed(0)}）`);
 
   // 回合开始会自动预选投石（第一件，最左边那格）。手机屏窄，它正好在屏外——
   // 不主动滚进视野，玩家有力度条有准星，却看不到自己手里拿的是什么
