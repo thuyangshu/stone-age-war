@@ -3,6 +3,7 @@
 //（英文名副本：部分安卓文件管理器/聊天软件转存中文文件名会乱码）
 // 只读 index.html 与源码，不修改任何源文件；产物可随时重新生成
 import { readFileSync, writeFileSync, mkdirSync, statSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -49,9 +50,14 @@ for (const name of ['Phaser', 'ZzFX', 'ravaged-planet']) {
   if (!licenses.includes(`## ${name}`)) fail(`vendor/LICENSES.md 缺少 ${name} 的许可声明`);
 }
 
-const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ');
+// 戳从**墙上时钟**改成**源码指纹**（2026-09-27，采审计第 5 轮的建议）。
+// 原来写的是打包那一刻的时间，于是同一份源码每重建一次就得到不同的文件、不同的 md5，
+// "冻结版本"就成了句空话——测试方量到的 md5 和交付声明的 md5 永远差那么一行。
+// 指纹只由内联进去的内容算出来（此刻 html 已是全量内联、还没插戳），
+// 所以源码不动产物就一个字节不动，md5 才是"这一版"的身份证而不是"这一次构建"的。
+const stamp = createHash('sha256').update(html).digest('hex').slice(0, 12);
 html = html.replace('<title>',
-  `<!-- 石器大战 单文件版 · 打包于 ${stamp} · 由 build.mjs 从源码生成，请勿手改 -->\n`
+  `<!-- 石器大战 单文件版 · 源码指纹 ${stamp} · 由 build.mjs 从源码生成，请勿手改 -->\n`
   + `<!--\n${licenses}\n-->\n<title>`);
 
 // 交付物改动铁律：dist 是生成物，但它是"可能被人打开过、编辑过"的成品，
@@ -61,8 +67,11 @@ html = html.replace('<title>',
 //         ③ 产物比某个源文件旧（源码变了，这就是一次正常重建）
 //   拦下：产物比**所有**源文件都新，内容却和重建结果对不上——源码没动、产物变了，
 //         只可能是有人手工改过。这时拒绝覆盖，让人先备份。
-const stampRe = /打包于 [\d-]+ [\d:]+/;
-const strip = (t) => t.replace(stampRe, '打包于 —');
+// 两种戳都认：老产物写的是"打包于 <时间>"，新产物写的是"源码指纹 <hex>"。
+// 只认新格式的话，格式切换后的第一次重建会把上一版误判成"手工改过"而拒绝覆盖——
+// 那一次误报正是这条守卫最不该出现的地方（它本来是防覆盖的，结果挡住了正常重建）。
+const stampRe = /(打包于 [\d-]+ [\d:]+|源码指纹 [0-9a-f]{12})/;
+const strip = (t) => t.replace(stampRe, '源码指纹 —');
 const srcMtime = Math.max(...used.map((u) => statSync(join(ROOT, u)).mtimeMs));
 const handEdited = OUTS.filter((out) => {
   let prev, mt;

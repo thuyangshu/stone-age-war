@@ -244,6 +244,38 @@ async function main() {
     s.hp[0] === 100 && s.hp[1] === 112,
     `hp=${s.hp.join('/')}（出厂值 100/112；data.js 的 HP 与 KOMI 表一改，这条必须一起改）`);
 
+  // S2c 受击体必须盖住画出来的身体——作者最初报的那个 bug 的回归闸门。
+  // 起因：「左边的人物投掷武器，路线经过右边的对手，但穿模而过，没有任何伤害。」
+  // 根因是"看得见的身体"和"打得中的身体"各说各话：判定体当时是 (x, y−30) 处半径 33 的圆，
+  // 只盖住身体中段，头部一大截打得中才怪。修完换成胶囊 HIT={BOT,TOP,R}，
+  // 但**此前没有任何一条测试量过"画出来的"与"打得到的"对不对得上**——
+  // 逻辑层的胶囊单测只验形状，验不了它跟贴图的摆位（origin/HERO_BOX）配不配。
+  // 这条直接量：关掉呼吸补间、把贴图钉回逻辑位置，扫 alpha 包围盒求真实身体上下沿，
+  // 再按 HIT 算胶囊上下沿，两边比。旧配置在这里差 78px，当场红。
+  const align = await evaluate(`(() => {
+    const sc = __debug.game.scene.getScene('battle'), s = sc.s, H = DATA.HIT;
+    return sc.heroes.map((spr, i) => {
+      sc.tweens.killTweensOf(spr); spr.y = s.players[i].y;   // 呼吸补间会让读数飘 ±3px
+      const src = spr.texture.getSourceImage(), W = src.width, Hh = src.height;
+      const d = src.getContext('2d').getImageData(0, 0, W, Hh).data;
+      let top = 1e9, bot = -1;
+      for (let y = 0; y < Hh; y++) for (let x = 0; x < W; x++) {
+        if (d[(y * W + x) * 4 + 3] > 8) { if (y < top) top = y; if (y > bot) bot = y; }
+      }
+      const wy0 = spr.y - spr.originY * Hh;
+      const py = s.players[i].y;
+      return { i, drawnTop: wy0 + top, drawnBot: wy0 + bot,
+               capTop: py - H.TOP - H.R, capBot: py - H.BOT + H.R };
+    });
+  })()`);
+  // 正数＝胶囊那一端没够到画出来的身体。容差 8px：留贴图抗锯齿与分节肢体的边缘余量；
+  // 两侧都卡，负太多是另一种错（打得中的地方比看得见的大，等于白送命中）。
+  const gapTop = align.map((a) => a.capTop - a.drawnTop);
+  const gapBot = align.map((a) => a.drawnBot - a.capBot);
+  check('S2c 受击体盖住画出来的身体（穿模 bug 回归闸门）',
+    gapTop.every((g) => g <= 8 && g > -8) && gapBot.every((g) => g <= 8 && g > -8),
+    `胶囊顶−身体顶=${gapTop.map((g) => g.toFixed(1)).join('/')}，身体底−胶囊底=${gapBot.map((g) => g.toFixed(1)).join('/')}（容差 ±8px）`);
+
   // S2b 地形要盖满视野。宽屏下适配缩放被高度卡住，视野比世界那 1600px 宽，
   // 地形只画世界尺寸的话左右会露出两条直角切口——地形看着像浮在背景上的方块
   const cov = await evaluate(`(() => { const sc=__debug.game.scene.getScene('battle');

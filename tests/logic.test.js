@@ -350,6 +350,20 @@ test('贴目分档：一局取双方较高档；认不出的档落锚定值；�
   assert.equal(L.komiFor(null, null), 12);
   assert.equal(L.komiFor('nonsense', 'easy'), 0, '认得出的一方仍该生效');
   assert.equal(L.komiFor('hard', undefined), 6);
+  // 原型链上的键名也必须落锚定值。这条是独立测试员 indep-komi ⓪ 打进来的真 bug：
+  // 判档位原本用 `lv in RANK`，而 `in` 穿原型链——('constructor' in RANK) 为真、
+  // RANK['constructor'] 是 Object 构造函数，best 被写成 'constructor'，
+  // 再取 K['constructor'] 又是函数，hpMax 直接变成 "100function Object() { [native code] }"。
+  // 产品 UI 的档位只从按钮来，到不了这条路径；但"认不出的档落 medium"是写明的约定，
+  // 约定就得真兜住。这里连同返回值类型一起钉死，免得再退回字符串拼接。
+  for (const k of ['constructor', 'toString', 'valueOf', 'hasOwnProperty', '__proto__', 'isPrototypeOf']) {
+    const v = L.komiFor(k, k);
+    assert.equal(typeof v, 'number', `komiFor('${k}') 应落锚定值，实得 ${typeof v}`);
+    assert.equal(v, 12, `komiFor('${k}') 应落锚定值 12，实得 ${v}`);
+  }
+  // 真档位与原型链键混着传：真档位该照常生效，别被原型链那条短路掉
+  assert.equal(L.komiFor('constructor', 'hard'), 6);
+  assert.equal(L.komiFor('easy', '__proto__'), 0);
   // 标量覆写：tools/komi-curve.cjs 扫曲线靠这条。删了它那条工具会静默退化成"三档同值"
   const base = D.KOMI;
   try {

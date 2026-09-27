@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#6B4530">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<!-- 石器大战 单文件版 · 打包于 2026-09-27 11:46 · 由 build.mjs 从源码生成，请勿手改 -->
+<!-- 石器大战 单文件版 · 源码指纹 e21f0c02aea8 · 由 build.mjs 从源码生成，请勿手改 -->
 <!--
 # 第三方库与许可证
 
@@ -1722,11 +1722,19 @@ const LOGIC = ((DATA, WORLD) => {
   // 也不要发 undefined 把 hp 变成 NaN。
   // 覆写成标量（DATA.KOMI = 8）时按标量发：tools/komi-curve.cjs 扫曲线就靠这条。
   const RANK = { easy: 0, medium: 1, hard: 2 };
+  const owns = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
   function komiFor(a, b) {
     const K = DATA.KOMI;
     if (typeof K === 'number') return K;
     let best = null;
-    for (const lv of [a, b]) if (lv in RANK && (best === null || RANK[lv] > RANK[best])) best = lv;
+    // 判档位用的是 owns()，不是 `lv in RANK`：`in` 会穿原型链，
+    // ('constructor' in RANK) 为真、RANK['constructor'] 是 Object 构造函数，
+    // 于是 best 被写成 'constructor'，再取 K['constructor'] 又是函数，
+    // hpMax 直接变成 "100function Object() { [native code] }"。
+    // 档位只从按钮和参数来，产品里到不了这条路径——但上方注释写明了
+    // "认不出的档落 medium"，那就是条约定，得真兜住，不能只兜住拼错的那些。
+    // （独立测试员的 indep-komi ⓪ 两条就是照这个打进来的。）
+    for (const lv of [a, b]) if (owns(RANK, lv) && (best === null || RANK[lv] > RANK[best])) best = lv;
     return K[best || 'medium'];
   }
 
