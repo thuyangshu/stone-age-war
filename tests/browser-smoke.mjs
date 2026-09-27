@@ -222,6 +222,12 @@ async function main() {
   check('S2 双方满血、有站位',
     s.hp[0] === DATA_HP && s.hp[1] === DATA_HP + DATA_KOMI && s.spawns.length === 2,
     `hp=${s.hp.join('/')}（满血 ${DATA_HP}/${DATA_HP + DATA_KOMI}）`);
+  // 上面那条两侧都从页面读：把 KOMI 改成 0 它照样绿（测试方 T-6 建议 6）。那条量的是
+  // "页面内部自洽"，这条量的是"发出去的确实是这几个数"。数值本身由镜像线
+  // （bot-playtest）钉平衡，这里钉出厂值——改了 data.js 的 HP/KOMI 就得同步改这一行
+  check('S2 贴目出厂值就是 100 / 112',
+    s.hp[0] === 100 && s.hp[1] === 112,
+    `hp=${s.hp.join('/')}（出厂值 100/112；data.js 的 HP 与 KOMI 一改，这条必须一起改）`);
 
   // S2b 地形要盖满视野。宽屏下适配缩放被高度卡住，视野比世界那 1600px 宽，
   // 地形只画世界尺寸的话左右会露出两条直角切口——地形看着像浮在背景上的方块

@@ -97,7 +97,14 @@ const UI = (() => {
     show('weapons');
     const sc = scene();
     if (!sc) return;
+    // 恢复要同时走即时与排队两条路。Phaser 的 scene.pause()/resume() 是排进
+    // SceneManager 队列、下一帧才落地的（vendor 里就是 queueOp），所以"同一拍先点暂停、
+    // 再点重开"时那句 pause 还在队列里没落地，此刻 isPaused() 是 false，条件式恢复整个
+    // 跳过；等队列一 drain，新局就被上一拍的 pause 冻住——实测 phase=idle、sysPaused=true，
+    // 玩家点不到"继续"（测试方 I7）。人手点不出同拍（≥16ms 就正常），但这条守卫是白给的。
+    // 无条件再排一次 resume 进队尾：队列顺序保证 pause 先落地、resume 后落地，净效果是运行
     if (sc.sys.isPaused()) sc.sys.resume();
+    sc.scene.resume();
     sc.startBattle(mode, level);
   }
 

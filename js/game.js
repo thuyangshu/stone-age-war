@@ -251,7 +251,7 @@ class BattleScene extends Phaser.Scene {
     UI.showPower(true, res.power);
   }
 
-  onUp() {
+  onUp(p) {
     const s = this.s;
     if (!s || !s.dragging) return;
     s.dragging = false;
@@ -260,7 +260,22 @@ class BattleScene extends Phaser.Scene {
     s.aim = null;
     this.clearAim();
     if (!res || !res.valid) return;   // 死区（拖距不足 / 力度不够）已在 LOGIC.pullToAim 里判掉
+    // 手指从画布一路拖到 HUD 上、松在某个按钮上：这一发作废，按钮说了算。
+    // 拖到暂停键上松手的人，本意是"这一发不打了"，不该顺带白扔一件武器（测试方 I4）
+    if (this.releaseOverUi(p)) return;
     this.fire(res.angle, res.power);
+  }
+
+  // 松手点是不是压在 HUD 的按钮上。HUD 整层是 pointer-events:none、只有按钮是 auto
+  // （style.css），所以画布上的正常松手 elementFromPoint 拿回来的是 canvas 自己，
+  // 这条只在真的压在控件上时才拦。鼠标事件直接有 clientX/Y，触摸得掏 changedTouches——
+  // 手机上这条路才是正路，两种都得认
+  releaseOverUi(p) {
+    const e = (p && p.event) || (this.input.activePointer && this.input.activePointer.event);
+    const t = e && ((e.changedTouches && e.changedTouches[0]) || e);
+    if (!t || typeof t.clientX !== 'number' || typeof t.clientY !== 'number') return false;
+    const el = document.elementFromPoint(t.clientX, t.clientY);
+    return !!(el && el.closest && el.closest('button'));
   }
 
   // 把屏幕拉弓向量换算成合法的出手角度与力度。

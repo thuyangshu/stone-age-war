@@ -6,7 +6,7 @@
 <meta name="theme-color" content="#6B4530">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<!-- 石器大战 单文件版 · 打包于 2026-09-26 23:07 · 由 build.mjs 从源码生成，请勿手改 -->
+<!-- 石器大战 单文件版 · 打包于 2026-09-27 00:03 · 由 build.mjs 从源码生成，请勿手改 -->
 <!--
 # 第三方库与许可证
 
@@ -643,7 +643,7 @@ const ZZFX =
 // 调平衡只改这一个文件：武器、物理、地形、AI、相机、回合节奏
 const DATA = {
   TITLE: '石器大战',
-  HP: 100,        // 双方满血
+  HP: 100,        // 先手满血（后手 = HP + KOMI，见下）
   HIT_R: 26,      // 角色受击半径（px，世界坐标）
   // 贴目：后手（player 1）开局多这么多血，抹平回合顺序带来的结构性先手优势。
   // 按**回合顺序**发，不按"人/AI"发——人机、双人、AI 对战三种走法同一条规则。
@@ -742,12 +742,17 @@ const DATA = {
   //   贴目 0      medium 59.8 / 61.0 ❌ 越线（就是上面那条未达标）；hard 81.1 / 81.5
   //   贴目 11     50.7 / 51.8 ✅；hard 25.3 / 24.9
   //   贴目 12     50.5 / 51.7 ✅；hard 25.3 / 24.9  ← 取这个
-  //   贴目 12.5   49.5 / 50.2 ✅，但 **hard 从 25.3 掉到 14.9 / 13.5**——越过"一片倒"的界，
-  //               等于把先手优势换成了后手优势，只是换了个方向（13 与 12.5 逐位相同）
+  //   贴目 12.5   49.5 / 50.2 ✅；hard 14.9 / 13.5（hard 这一列与贴目 13 逐位相同）
   // 一个标量治不了三档：先手优势本身随命中率变（easy ~51% / medium 60% / hard 81%），
-  // 在 medium 校准的值对 easy 略过头、对 hard 远远过头。12 是"medium 达标、
-  // 且 hard 镜像还没翻面"的最大值。hard 镜像是**诊断量不是玩法模式**（实战里不会出现
-  // 两个 hard 互打），不为它牺牲 medium 这条真有验收线的档。
+  // 在 medium 校准的值对 easy 略过头、对 hard 远远过头。两列的形态也不一样——
+  // medium 是平滑的（11→12→12.5→13 逐格只挪 0.2~0.5 点），hard 是台阶式的
+  // （+0~+4 恒在 79.6%、+5 一跳 38 点落到 41.1%；+11 与 +12 是平台）。
+  // 取值规则：在 medium 达标的贴目里取 hard 平台的上端，即 12（11 与 12 在 medium 上
+  // 只差 0.2 点，取 12 更居中）。这是**取舍不是"不能"**：不理会 hard 的话，12.5 能把
+  // medium 压到约 49.9%（同样在带内），选 12 就是拿 medium 的 1.1 点换 hard 的 10 点。
+  // hard 镜像是诊断量（AI 互打里不会出现两个 hard 对打），但**人机 hard 与它同构**：
+  // 玩家在人机里恒先手，这 12 点落在 AI 身上，三档结构位移约 −6 / −9 / −56 点。
+  // 完整依据与取舍见 docs/需求与验收.md §五
   // 残留（如实记）：medium 镜像落在 51.1%（两族各 2400 局合并；分族 50.5 / 51.7），
   // 离 50 还差约 1.1 点——在 45~55 线内，但稳定偏上半区。要再往中间压就得动 hard 镜像，
   // 或者把贴目改成随命中率变的函数，那是玩法改动，不在本次调参范围。
@@ -2460,7 +2465,7 @@ class BattleScene extends Phaser.Scene {
     UI.showPower(true, res.power);
   }
 
-  onUp() {
+  onUp(p) {
     const s = this.s;
     if (!s || !s.dragging) return;
     s.dragging = false;
@@ -2469,7 +2474,22 @@ class BattleScene extends Phaser.Scene {
     s.aim = null;
     this.clearAim();
     if (!res || !res.valid) return;   // 死区（拖距不足 / 力度不够）已在 LOGIC.pullToAim 里判掉
+    // 手指从画布一路拖到 HUD 上、松在某个按钮上：这一发作废，按钮说了算。
+    // 拖到暂停键上松手的人，本意是"这一发不打了"，不该顺带白扔一件武器（测试方 I4）
+    if (this.releaseOverUi(p)) return;
     this.fire(res.angle, res.power);
+  }
+
+  // 松手点是不是压在 HUD 的按钮上。HUD 整层是 pointer-events:none、只有按钮是 auto
+  // （style.css），所以画布上的正常松手 elementFromPoint 拿回来的是 canvas 自己，
+  // 这条只在真的压在控件上时才拦。鼠标事件直接有 clientX/Y，触摸得掏 changedTouches——
+  // 手机上这条路才是正路，两种都得认
+  releaseOverUi(p) {
+    const e = (p && p.event) || (this.input.activePointer && this.input.activePointer.event);
+    const t = e && ((e.changedTouches && e.changedTouches[0]) || e);
+    if (!t || typeof t.clientX !== 'number' || typeof t.clientY !== 'number') return false;
+    const el = document.elementFromPoint(t.clientX, t.clientY);
+    return !!(el && el.closest && el.closest('button'));
   }
 
   // 把屏幕拉弓向量换算成合法的出手角度与力度。
@@ -2883,7 +2903,14 @@ const UI = (() => {
     show('weapons');
     const sc = scene();
     if (!sc) return;
+    // 恢复要同时走即时与排队两条路。Phaser 的 scene.pause()/resume() 是排进
+    // SceneManager 队列、下一帧才落地的（vendor 里就是 queueOp），所以"同一拍先点暂停、
+    // 再点重开"时那句 pause 还在队列里没落地，此刻 isPaused() 是 false，条件式恢复整个
+    // 跳过；等队列一 drain，新局就被上一拍的 pause 冻住——实测 phase=idle、sysPaused=true，
+    // 玩家点不到"继续"（测试方 I7）。人手点不出同拍（≥16ms 就正常），但这条守卫是白给的。
+    // 无条件再排一次 resume 进队尾：队列顺序保证 pause 先落地、resume 后落地，净效果是运行
     if (sc.sys.isPaused()) sc.sys.resume();
+    sc.scene.resume();
     sc.startBattle(mode, level);
   }
 
