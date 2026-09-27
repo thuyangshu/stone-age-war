@@ -24,7 +24,13 @@ const require = createRequire(import.meta.url);
 const LOGIC = require(join(__dirname, '..', 'js', 'logic.js'));
 
 const N = Number(process.argv[2]) || 2400;        // 每族局数
+// 口径最小 N（docs/需求与验收.md §五 的"最小 N 的算术"）：n=385 时 ci=5.0%、真值 49.9%
+// 时误红 99.8%（区间只剩 [49.99, 50.01] 这 0.02 点宽）；n=4800（两族各 2400）时 ci=1.5%、
+// 误红 0.0001%。所以 N 低于 2400/族 时这个档位判定**不作数**——实测 N=400/族 时
+// medium 镜像读到 51.6% [48.2, 55.1]，上沿越线 0.03 点被判"不达标"，纯属 N 造成的假红。
+const MIN_N = 2400;
 const Z = 1.96;                                    // 95% 置信区间
+const lowN = N < MIN_N;
 const SEEDS = [
   { name: 'A', at: (i) => 5000 + i * 13 },
   { name: 'B', at: (i) => 20260000 + i * 31 },
@@ -38,6 +44,12 @@ const PAIRS = [
 
 console.log(`A4 口径：95%CI 不得越线；判定在合并样本上（两族合并），分族仅诊断`);
 console.log(`N=${N}/族/对局 → 合并 2×${N}=${2 * N}\n`);
+if (lowN) {
+  const halfW = Z * Math.sqrt(0.25 / (2 * N));      // 合并样本的区间半宽（点）
+  console.log(`⚠ N=${N}/族 低于口径最小 N（${MIN_N}/族，见 docs/需求与验收.md §五）：`
+    + `本量级区间半宽 ±${(halfW * 100).toFixed(2)} 点（口径 N 时为 ±1.5 点），而镜像验收带只有 ±5 点。`);
+  console.log(`  → 本结果只作诊断，不作判定（实测 N=400/族 时 medium 镜像读到 51.6% [48.2, 55.1]，越上沿 0.03 点被判红，那是 N 造成的假红）。\n`);
+}
 console.log('对局'.padEnd(17) + '族'.padEnd(4) + 'n'.padEnd(7) + '先手胜率'.padEnd(10)
   + '95%CI'.padEnd(20) + '验收线'.padEnd(13) + '平均回合'.padEnd(9) + '未完成');
 console.log('─'.repeat(100));
@@ -91,5 +103,6 @@ for (const { a, b, lo, hi, desc } of PAIRS) {
   pooledRows.push({ pair: `${a} vs ${b}`, n: pn, rate, low, up, ok, desc });
 }
 console.log('');
-if (bad) { console.log(`❌ ${bad} 档不达标（合并口径）`); process.exit(1); }
-console.log('✅ 三档在合并样本上都不越线');
+const note = lowN ? `　⚠ 诊断模式：N=${N}/族 < 口径最小 N=${MIN_N}/族，本行不作判定（见文件头与 §五）` : '';
+if (bad) { console.log(`❌ ${bad} 档不达标（合并口径）${note}`); process.exit(1); }
+console.log(`✅ 三档在合并样本上都不越线${note}`);

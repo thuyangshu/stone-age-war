@@ -205,71 +205,111 @@ async function main() {
 
   // ══════════════════════════════════════════════════════════
   // ══════════════════════════════════════════════════════════
-  console.log('\n══ K. 后手贴目（DATA.KOMI）在界面上的后果 ══');
-  // 贴目按回合顺序发：人机模式玩家恒先手（0 号），所以 12 点血落在 AI 那侧
-  for (const mode of ['solo', 'duo']) {
-    await nav();
+  console.log('\n══ K. 后手贴目（DATA.KOMI 分档表）在界面上的后果 ══');
+  // 贴目按回合顺序发：人机模式玩家恒先手（0 号），所以贴目落在 AI 那侧。
+  // 2026-09-27 第二轮起贴目是**分档表** {easy:0, medium:12, hard:6}，后手满血随所选难度变：
+  //   easy 100/100、medium 100/112、hard 100/106；本地双人没有档位，取 medium 锚定值 → 100/112。
+  // 旧版这一组通篇硬写标量 112，分档后 K1 会算成 `100 + {object}` 字符串拼接——本组按分档重写。
+  // 走**真实 UI 路径**（菜单里点难度按钮 → 点「人机对战」），不调 __debug.start：贴目要经
+  // ui.js 的 level → game.js 的 komiFor(mode==='solo' ? level : null) 这条链才发得出来，
+  // 直接调 startBattle 会绕过 UI 那一环，量不到"选难度有没有真的换到贴目"。
+  const FIXTURE = [
+    { mode: 'solo', lv: 'easy', foeFull: 100 },
+    { mode: 'solo', lv: 'medium', foeFull: 112 },
+    { mode: 'solo', lv: 'hard', foeFull: 106 },
+    { mode: 'duo', lv: 'medium', foeFull: 112 },
+  ];
+  const menuStart = async (mode, lv) => {
+    await nav();                                     // 回主菜单（level 会重置成 medium）
+    await clickEl(`#diff .lv[data-lv="${lv}"]`);      // 真实 UI：先点难度
     await clickId(mode === 'solo' ? 'btn-solo' : 'btn-duo');
     await waitFor('window.__debug.ready() && __debug.state().phase === "aim"', 6000);
-    await newBattle(mode, 'medium', 70700);
-    await waitFor(`__debug.state() && __debug.state().phase === 'aim'`, 6000);
-    const full = await evaluate(`(() => { const s=__debug.game.scene.getScene('battle').s;
-      return { HP: DATA.HP, KOMI: DATA.KOMI, ps: s.players.map(p=>({hp:p.hp,hpMax:p.hpMax,idx:p.idx})) }; })()`);
-    check(`K1[${mode}] 开局满血 = 先手 ${full.HP} / 后手 ${full.HP + full.KOMI}（贴目按回合顺序发）`,
-      full.ps[0].hp === full.HP && full.ps[0].hpMax === full.HP
-      && full.ps[1].hp === full.HP + full.KOMI && full.ps[1].hpMax === full.HP + full.KOMI,
-      `hp/hpMax = ${full.ps.map((p) => `${p.hp}/${p.hpMax}`).join(' ｜ ')}`);
+  };
+  const readFull = () => evaluate(`(() => { const s=__debug.game.scene.getScene('battle').s;
+    return { HP: DATA.HP, uiMode: __debug.mode(), uiLevel: __debug.level(), sLevel: s.level, sMode: s.mode,
+             ps: s.players.map(p=>({hp:p.hp,hpMax:p.hpMax,idx:p.idx})) }; })()`);
+
+  for (const { mode, lv, foeFull } of FIXTURE) {
+    await menuStart(mode, lv);
+    const g = await readFull();
+    check(`K1[${mode}/${lv}] 真实 UI 路径开局满血 = 先手 ${g.HP} / 后手 ${foeFull}（贴目 ${foeFull - g.HP}）`,
+      g.ps[0].hp === g.HP && g.ps[0].hpMax === g.HP && g.ps[0].idx === 0
+      && g.ps[1].hp === foeFull && g.ps[1].hpMax === foeFull && g.ps[1].idx === 1,
+      `hp/hpMax = ${g.ps.map((p) => `${p.hp}/${p.hpMax}`).join(' ｜ ')}`
+      + `　UI=${g.uiMode}/${g.uiLevel} 局内=${g.sMode}/${g.sLevel}`);
+    if (mode === 'solo') {
+      check(`K1[${mode}/${lv}] 点难度按钮真的传到了局内（UI.level === 局内 level === ${lv}）`,
+        g.uiLevel === lv && g.sLevel === lv, `UI=${g.uiLevel} 局内=${g.sLevel}`);
+    }
+  }
+  // 出厂值单独钉一条：上面几条的期望值都在本文件里写死（不是从页面读），但"表本身是不是
+  // 这三格"还得有一条直接的。data.js 的 KOMI 表一动，这条和上面 FIXTURE 必须一起改。
+  {
+    await nav();
+    const t = await evaluate(`(() => ({ KOMI: DATA.KOMI, HP: DATA.HP }))()`);
+    check('K1 贴目出厂值就是分档表 {easy:0, medium:12, hard:6}',
+      t.HP === 100 && t.KOMI && t.KOMI.easy === 0 && t.KOMI.medium === 12 && t.KOMI.hard === 6,
+      `HP=${t.HP} KOMI=${JSON.stringify(t.KOMI)}`);
   }
 
   // K2 血条比例必须按各人自己的 hpMax 算。满血时看不出差别（Math.min 会把 112% 夹成 100%），
-  // 只有掉到中段才分得开：56/112 = 50%，按 DATA.HP 算会画成 56%——这是唯一能区分两种实现的观测量
-  await nav();
-  await clickId('btn-solo');
-  await waitFor('window.__debug.ready() && __debug.state().phase === "aim"', 6000);
-  await newBattle('solo', 'medium', 70701);
-  await waitFor(`__debug.state() && __debug.state().phase === 'aim'`, 6000);
-  await evaluate(`(() => { const sc=__debug.game.scene.getScene('battle'), s=sc.s;
-    s.players[1].hp = 56; s.players[0].hp = 50; UI.syncHp(); return true; })()`);
-  await sleep(500);   // .hpfill 有 .35s 宽度过渡，等它走完再量
-  const bars = await evaluate(`(() => { const out={};
-    for (const i of [0,1]) { const card=document.getElementById('p'+i+'card');
-      out[i] = { fill: card.querySelector('.hpfill').getBoundingClientRect().width,
-                 bar: card.querySelector('.hpbar').getBoundingClientRect().width }; }
-    return out; })()`);
-  const rb0 = bars[0].fill / bars[0].bar, rb1 = bars[1].fill / bars[1].bar;
-  check('K2 血条按 hpMax 画：后手 56/112 应画 50%（按 100 血算会画成 56%）',
-    Math.abs(rb1 - 0.5) < 0.02 && Math.abs(rb0 - 0.5) < 0.02,
-    `先手 50/100=${(rb0 * 100).toFixed(1)}% ｜ 后手 56/112=${(rb1 * 100).toFixed(1)}%`);
+  // 只有掉到中段才分得开：56/112 = 50%，按 DATA.HP 算会画成 56%——这是唯一能区分两种实现的观测量。
+  // medium（112）是最尖的一档；hard（106）差 3 点、也在阈内，一并量。
+  for (const lv of ['medium', 'hard']) {
+    await menuStart('solo', lv);
+    const half = await evaluate(`(() => { const sc=__debug.game.scene.getScene('battle'), s=sc.s;
+      s.players[1].hp = s.players[1].hpMax / 2; s.players[0].hp = s.players[0].hpMax / 2; UI.syncHp();
+      return { hp: s.players.map(p=>p.hp), max: s.players.map(p=>p.hpMax) }; })()`);
+    await sleep(500);   // .hpfill 有 .35s 宽度过渡，等它走完再量
+    const bars = await evaluate(`(() => { const out={};
+      for (const i of [0,1]) { const card=document.getElementById('p'+i+'card');
+        out[i] = { fill: card.querySelector('.hpfill').getBoundingClientRect().width,
+                   bar: card.querySelector('.hpbar').getBoundingClientRect().width }; }
+      return out; })()`);
+    const rb0 = bars[0].fill / bars[0].bar, rb1 = bars[1].fill / bars[1].bar;
+    check(`K2 血条按 hpMax 画[${lv}]：后手 ${half.hp[1]}/${half.max[1]} 应画 50%`
+      + `（按 ${half.max[0]} 血算会画成 ${(half.hp[1] / half.max[0] * 100).toFixed(1)}%）`,
+      Math.abs(rb1 - 0.5) < 0.02 && Math.abs(rb0 - 0.5) < 0.02,
+      `先手 ${half.hp[0]}/${half.max[0]}=${(rb0 * 100).toFixed(1)}% ｜ 后手 ${half.hp[1]}/${half.max[1]}=${(rb1 * 100).toFixed(1)}%`);
+  }
 
-  // K3 结算页如实写贴目血：后手满血 112 获胜时文案必须是 112，不是被夹成 100（F5）
-  await nav();
-  await clickId('btn-solo');
-  await waitFor('window.__debug.ready() && __debug.state().phase === "aim"', 6000);
-  await newBattle('solo', 'medium', 70702);
-  await waitFor(`__debug.state() && __debug.state().phase === 'aim'`, 6000);
-  const preK = await evaluate(`(() => { const s=__debug.game.scene.getScene('battle').s;
-    return { winHp: s.players[1].hp, winMax: s.players[1].hpMax, mode: UI.mode() }; })()`);
-  await evaluate(`(() => { const sc=__debug.game.scene.getScene('battle'), s=sc.s;
-    s.players[0].hp = 0; sc.endGame(1); return true; })()`);
-  await sleep(1000);   // showOver 在 endGame 后 560ms 才弹，早读会读到 index.html 里的占位文案
-  const overK = await evaluate(`(() => ({ show: !document.getElementById('over').hidden,
-    title: document.getElementById('over-title').textContent,
-    sub: document.getElementById('over-sub').textContent }))()`);
-  const mK = /剩余血量 (\d+) 对 (\d+)/.exec(overK.sub || '');
-  check('K3 结算页如实写贴目血（112 对 0），不夹到 100（F5）',
-    overK.show && !!mK && Number(mK[1]) === Math.round(preK.winHp) && Number(mK[1]) === preK.winMax && Number(mK[1]) > 100,
-    `模式=${preK.mode}「${overK.title}」「${overK.sub}」胜方 hp=${preK.winHp}/${preK.winMax}`);
+  // K3 结算页如实写贴目血：后手满血获胜时文案必须是 HP+贴目，不是被夹成 100（F5）。
+  // 三档都量：easy 贴 0 时这一条退化成"100 对 0"（不该被当成贴目生效），medium/hard 才是判据。
+  for (const lv of ['easy', 'medium', 'hard']) {
+    await menuStart('solo', lv);
+    const preK = await evaluate(`(() => { const s=__debug.game.scene.getScene('battle').s;
+      return { winHp: s.players[1].hp, winMax: s.players[1].hpMax, mode: UI.mode() }; })()`);
+    await evaluate(`(() => { const sc=__debug.game.scene.getScene('battle'), s=sc.s;
+      s.players[0].hp = 0; sc.endGame(1); return true; })()`);
+    await sleep(1000);   // showOver 在 endGame 后 560ms 才弹，早读会读到 index.html 里的占位文案
+    const overK = await evaluate(`(() => ({ show: !document.getElementById('over').hidden,
+      title: document.getElementById('over-title').textContent,
+      sub: document.getElementById('over-sub').textContent }))()`);
+    const mK = /剩余血量 (\d+) 对 (\d+)/.exec(overK.sub || '');
+    check(`K3[${lv}] 结算页如实写贴目血（${preK.winMax} 对 0），不夹到 100（F5）`,
+      overK.show && !!mK && Number(mK[1]) === Math.round(preK.winHp) && Number(mK[1]) === preK.winMax
+      && (preK.winMax <= 100 || Number(mK[1]) > 100),
+      `模式=${preK.mode}「${overK.title}」「${overK.sub}」胜方 hp=${preK.winHp}/${preK.winMax}`);
+  }
 
-  // K4 重开不叠加、不丢失：打残后重开，满血回到 [100, 112]，灼烧清空
-  await evaluate(`(() => { const sc=__debug.game.scene.getScene('battle'), s=sc.s;
-    s.players[0].hp = 7; s.players[1].hp = 7; s.players[1].burn = { turns: 3, dmg: 2 }; return true; })()`);
-  await newBattle('solo', 'medium', 70703);
-  await waitFor(`__debug.state() && __debug.state().phase === 'aim'`, 6000);
-  const re = await evaluate(`(() => { const s=__debug.game.scene.getScene('battle').s;
-    return { hp: s.players.map(p=>p.hp), max: s.players.map(p=>p.hpMax), burns: s.players.map(p=>!!p.burn) }; })()`);
-  check('K4 重开后贴目重新发放（[100,112]），不叠加、不残留灼烧',
-    re.hp[0] === 100 && re.hp[1] === 112 && re.max[0] === 100 && re.max[1] === 112 && !re.burns[0] && !re.burns[1],
-    `hp=${re.hp.join('/')} hpMax=${re.max.join('/')} burn=${re.burns.join('/')}`);
+  // K4 重开不叠加、不丢失：打残后重开，满血回到本档的 [HP, HP+贴目]，灼烧清空。
+  // 走真实 UI（暂停 → 重开），不调 startBattle——重开是"有没有把贴目重新发一遍"的那条路。
+  for (const { mode, lv, foeFull } of FIXTURE) {
+    await menuStart(mode, lv);
+    await evaluate(`(() => { const sc=__debug.game.scene.getScene('battle'), s=sc.s;
+      s.players[0].hp = 7; s.players[1].hp = 7; s.players[1].burn = { turns: 3, dmg: 2 }; return true; })()`);
+    await clickId('btn-pause');
+    await sleep(300);
+    await clickId('btn-restart');
+    await waitFor('window.__debug.ready() && __debug.state().phase === "aim"', 6000);
+    const re = await readFull();
+    check(`K4[${mode}/${lv}] 重开后贴目重新发放（[100,${foeFull}]），不叠加、不残留灼烧`,
+      re.ps[0].hp === 100 && re.ps[1].hp === foeFull
+      && re.ps[0].hpMax === 100 && re.ps[1].hpMax === foeFull
+      && !re.ps[0].burn && !re.ps[1].burn && re.uiLevel === (mode === 'solo' ? lv : re.uiLevel),
+      `hp=${re.ps.map((p) => p.hp).join('/')} hpMax=${re.ps.map((p) => p.hpMax).join('/')}`
+      + ` burn=${re.ps.map((p) => !!p.burn).join('/')} 重开后 UI.level=${re.uiLevel}`);
+  }
 
   // --only-k：K 组跑完就收（变异审计/增量复验用，省得重跑整个浏览器矩阵）
   if (process.argv.includes('--only-k')) { console.log('（--only-k：K 组结束即退出）'); return; }
@@ -306,6 +346,11 @@ async function main() {
         `射手世界x=${bad[0].meX} 而视野只覆盖世界x[${bad[0].vl},${bad[0].vr}]` : ''));
     check(`C[${vp.tag}] 第一回合射手不被武器栏盖住`, behind === 0, `${behind}/12 个种子的精灵底部低于武器栏上沿`);
   }
+
+  // --only-c：C 组跑完就收。C 组是唯一能抓住"首回合不聚焦"的现行断言
+  // （开发方冒烟的 S-5 只判"射手落在 worldView 里"，相机停在别处也可能蒙对，
+  //   见变异夹具 m1b；C 组每个种子都 nav() 重开页面、且判整只精灵是否完整在视口内）。
+  if (process.argv.includes('--only-c')) { console.log('（--only-c：C 组结束即退出）'); return; }
 
   // ══════════════════════════════════════════════════════════
   console.log('\n══ I. 交互边界 ══');

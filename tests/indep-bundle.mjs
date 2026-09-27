@@ -24,10 +24,12 @@ for (const file of bundles) {
   const html = readFileSync(join(distDir, file), 'utf8');
   console.log(`\n── ${file} ──`);
 
-  const stamp = (html.match(/打包于 ([\d-]+ [\d:]+)/) || [])[1];
+  // 2026-09-27：build.mjs 把时间戳换成了内容指纹（源码 sha256 前 12 位），
+  // 打包因此可复现（连打两次 md5 相同）；这里两种格式都认，别只认旧的那种。
+  const stamp = (html.match(/源码指纹 ([0-9a-f]{12})/) || html.match(/打包于 ([\d-]+ [\d:]+)/) || [])[1];
   const builtAt = statSync(join(distDir, file)).mtimeMs;
   const stale = [];
-  console.log(`   打包时间戳：${stamp || '（无）'}（文件时间 ${new Date(builtAt).toLocaleString('zh-CN')}）`);
+  console.log(`   源码指纹/打包戳：${stamp || '（无）'}（文件时间 ${new Date(builtAt).toLocaleString('zh-CN')}）`);
 
   // 1) 逐段比对：每个内联 <script>/<style> 块开头都有 /* 源路径 */ 标记
   const blocks = [
